@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/* Tailwind 4 用 CSS 变量做主题，不需要 tailwind.config.js。
+   这里只定义几个语义色，让卡片/按钮有统一的视觉语言。 */
+@theme {
+  --color-ink: #1a1a1a;
+  --color-muted: #6b7280;
+  --color-surface: #ffffff;
+  --color-canvas: #f6f7f9;
+  --color-line: #e5e7eb;
+  --color-brand: #2563eb;
+
+  /* 四档评分的语义色，和 Anki 的习惯一致：
+     忘了→红、困难→橙、一般→蓝、简单→绿 */
+  --color-rate-again: #ef4444;
+  --color-rate-hard: #f59e0b;
+  --color-rate-good: #2563eb;
+  --color-rate-easy: #10b981;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 卡片翻面用的 3D 翻转。整个卡片绕 Y 轴转，正反两面各自
+   用 backface-visibility 藏住背面那一侧。
+
+   外框负责把「当前没露出来的那一面」裁掉：两面叠在同一个 grid 单元格里，
+   行高取两者的较大值（见 WordCard 的锁高注释），不裁的话较长的那面会把
+   document 顶高，锁高就白做了。
+
+   这里刻意**不加 perspective**：有透视时近端半张卡会被放大，转起来之后它的
+   包围盒会超出静止时的外框——实测 1280 宽下最大超出约 10px，卡片的边会在
+   翻转过程中被削掉一截。去掉透视走正交投影，包围盒永远不超过静止外框，
+   既不裁边，也不用留任何"大概多少像素"的余量。代价是少了点纵深，
+   但那点纵深在 420ms 里本来就看不太出来。 */
+.flip-scene {
+  /* 翻转时长。收放外框要用到它的一半，写成变量免得两处对不上 */
+  --flip-duration: 420ms;
+  overflow: hidden;
+  /* 外框高度跟着当前那一面变。高度会动画，是因为翻回正面时外框要收矮——
+     收得太早会把「还在画面里那一面」的下半截削掉，所以变矮要延后半个翻转
+     （见 WordCard 里设 transitionDelay 那段），时长也就取翻转的一半。 */
+  transition: height calc(var(--flip-duration) / 2) linear;
+}
+
+.flip-card {
+  transform-style: preserve-3d;
+  transition: transform var(--flip-duration) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.flip-card.is-flipped {
+  transform: rotateY(180deg);
+}
+
+.flip-face {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.flip-face-back {
+  transform: rotateY(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flip-card,
+  .flip-scene {
+    transition: none;
+  }
+}

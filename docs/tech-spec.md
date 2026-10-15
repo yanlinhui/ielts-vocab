@@ -1,0 +1,946 @@
+# 雅思词汇真经 · 技术规范
+
+> 最后更新：2026-10-16
+> 配套文档：[计划文档](./plan.md) · [PRD](./PRD.md)
+
+---
+
+## 1. 架构总览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  离线提取流水线（Python，跑一次）                              │
+│                                                              │
+│  PDF(扫描件) → [抠图] → 页面JPEG → [OCR] → 每页文本 → [解析]   │
+│                                                  ↓ 词表       │
+│                                    [ECDICT 校验/补音标释义]    │
+│                                          ↓                   │
+│                              data/words.clean.json           │
+│                              data/extraction-report.md       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ 一次性导入
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  应用运行时（Next.js + SQLite，本地）                          │
+│                                                              │
+│  seed.ts → SQLite (Word/Unit)                                │
+│                    ↓                                         │
+│  React 页面 ←→ Server Actions / Route Handlers               │
+│                    ↓                                         │
+│              lib/srs.ts (ts-fsrs)                            │
+│                    ↓                                         │
+│         SQLite (UserWordProgress / ReviewLog)                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键架构决策：提取和应用完全解耦。**
+
+Python 提取脚本只产出 `words.clean.json` 这一个文件。前端**完全不知道**这些词是从 PDF 来的、怎么提取的。好处：
+- 提取流程怎么改都不影响前端
+- 以后换数据源（比如换成开源词库）只需要产出同样格式的 JSON
+- 提取脚本可以反复重跑，不碰应用代码
+
+---
+
+## 2. 技术栈与理由
+
+| 层 | 选择 | 版本 | 理由 |
+|---|---|---|---|
+| 框架 | Next.js（App Router） | 15.5.28 | 前后端一体。以后部署 Vercel 不用改架构 |
+| UI 框架 | React | 19.3.1 | 随 Next 15 一起装的 |
+| 语言 | TypeScript | **6.0.3** | 数据模型复杂（FSRS 状态 + 用户进度），类型能挡掉大量低级错误 |
+| 样式 | Tailwind CSS | 4.3.3 | 主流，无运行时开销 |
+| 数据库 | SQLite | — | 本地单文件，零配置 |
+| ORM | Prisma | **6.19.3**（client 与 CLI 同版本） | 用代码操作数据库。**换 Postgres 只改 datasource 一行** |
+| 复习算法 | ts-fsrs | 5.4.2 | FSRS 官方 JS 实现，纯本地 |
+| 发音 | Web Speech API | — | 浏览器内置，零成本 |
+| 图表（阶段三） | Recharts | — | React 生态主流 |
+| 抠图脚本 | Python | 3.13 | **零第三方依赖**（手写 PDF 对象解析） |
+| OCR | rapidocr + onnxruntime | 3.10 / 1.31 | 本地 CPU 推理，模型随包自带、**不联网**；见 7.2 |
+
+### 两个版本坑（都踩过，记下来免得重来）
+
+**Prisma 必须钉在 6.x，且 client 和 CLI 版本一致。**
+
+`npm install -D prisma` 会装到 **8.0.0-rc.22**——镜像把预发布版打上了 `latest` tag。两个问题：① 个人工具不该压预发布版；② Prisma 7 起 CLI 整个重做（`migrate` 命令没了，改成 `migration` / `orm` / `db`），还改成 ESM-first、要求 `prisma.config.ts`、不再自动读 `.env`，跟 `@prisma/client@6.x` 也对不上。所以显式装：`npm i -D prisma@6.19.3 && npm i @prisma/client@6.19.3`。
+
+**TypeScript 6.0.3 需要 `src/global.d.ts`。**
+
+同样是被镜像 `latest` 顶到了新大版本。TS 6 开始检查**副作用导入**（TS2882），而 Next 自动生成的 `next-env.d.ts` 只声明了 `*.module.css`，没有纯 CSS：
+
+```ts
+// src/global.d.ts
+declare module "*.css";
+```
+
+`next-env.d.ts` 是自动生成的、不能手改，所以单独放一个文件。**不要因为这两条去降级依赖**——钉住版本就够了，降级会在别处引入新的不兼容。
+
+### 为什么不引入的东西
+
+| 不用 | 为什么 |
+|---|---|
+| Zustand / Redux | 状态简单（当前卡片 + 队列），React `useState` 足够。加状态库是过度设计 |
+| 云端数据库 | 单人本地用，SQLite 够了 |
+| 认证库 | MVP 无登录 |
+| 后端框架（Express 等） | Next.js 自带 Server Actions / Route Handlers |
+
+---
+
+## 3. 目录结构
+
+```
+IELTS Learning Tools/
+├── 《雅思词汇真经(刘洪波)》.pdf       # 数据源
+├── docs/                              # 项目文档
+│   ├── plan.md
+│   ├── PRD.md
+│   └── tech-spec.md
+├── scripts/                           # 提取流水线（Python）
+│   ├── extract_images.py              # PDF → data/pages/*.jpg（零依赖）
+│   ├── read_outline.py                # 读 PDF 书签（排查用，非必需）
+│   ├── ocr_pages.py                   # 页面图 → data/ocr/（依赖 rapidocr，见下）
+│   ├── build_vocab.py                 # OCR 文本 → 结构化词表
+│   ├── parse_index.py                 # 书末全书索引 → 权威词表（交叉校验基准）
+│   ├── check_with_ecdict.py           # ECDICT 校验 + 补音标释义
+│   ├── reconcile_index.py             # 用索引给词表补漏/纠拼/去伪/去重
+│   ├── verify_vocab.py                # 旁证：拿每页页脚索引条独立复核
+│   ├── fix_spacing.py                 # 修 OCR 单词粘连（ECDICT 当白名单重切，见 7.8）
+│   ├── update_spacing_db.ts           # 把修复结果原位写回库（不重灌，进度不丢）
+│   └── verify_spacing_db.ts           # 复核落库：进度完好 + 旧文本已清零
+├── data/                              # 提取产物（gitignore，体积大）
+│   ├── pages/                         # 334 张页面图
+│   ├── ocr/                           # 每页 OCR 的 .txt + .json（含坐标）
+│   ├── words.raw.json                 # 解析出的原始词表
+│   ├── words.clean.json               # 最终词库 ← 应用的唯一输入
+│   ├── book-index.json                # 书末索引解析结果
+│   ├── ecdict-report.md               # ECDICT 单步报告
+│   ├── spacing-changes.json           # 粘连修复替换表（旧文本 → 新文本）
+│   ├── spacing-report.md              # 粘连修复报告（改动清单 + 抽样 + 依据统计）
+│   └── extraction-report.md           # 最终质量报告
+├── ecdict/                            # ECDICT 数据（gitignore）
+│   └── ecdict.csv 或 stardict.db
+├── prisma/
+│   ├── schema.prisma
+│   ├── migrations/                    # 2 个：init + add_progress_created_at
+│   ├── dev.db                         # SQLite 数据文件（gitignore）
+│   └── seed.ts                        # 读 words.clean.json 灌库
+├── src/
+│   ├── app/
+│   │   ├── layout.tsx                 # 全局布局 + 导航
+│   │   ├── globals.css                # Tailwind 入口 + 配色变量
+│   │   ├── page.tsx                   # 首页：今日进度 + 开始按钮
+│   │   ├── units/page.tsx             # 单元列表（含各单元进度）
+│   │   ├── study/page.tsx             # 学习/复习（核心）
+│   │   ├── stats/page.tsx             # 统计（阶段三）
+│   │   ├── settings/page.tsx          # 设置
+│   │   └── api/
+│   │       ├── review/route.ts        # POST 评分
+│   │       └── settings/route.ts      # POST 保存设置
+│   ├── components/
+│   │   ├── WordCard.tsx               # 翻面卡片（正面单词 / 背面全展开，见 5.5）
+│   │   ├── StudySession.tsx           # 会话状态机（队列 + 评分 + 重入队）
+│   │   ├── RatingButtons.tsx          # 四档按钮 + 各自的下次间隔
+│   │   ├── SpeakButton.tsx            # 喇叭按钮
+│   │   ├── ProgressBar.tsx
+│   │   └── SettingsForm.tsx
+│   ├── lib/
+│   │   ├── db.ts                      # Prisma 客户端单例（挂 globalThis）
+│   │   ├── srs.ts                     # ★ FSRS 封装，唯一 import ts-fsrs 处
+│   │   ├── session.ts                 # 会话队列 + 今日统计
+│   │   ├── rating.ts                  # Rating 类型 + 四档文案（不碰数据库）
+│   │   ├── tts.ts                     # Web Speech API 封装
+│   │   ├── user.ts                    # getCurrentUser()（多用户预留位）
+│   │   ├── format.ts                  # 时间格式化（"3 天后"/"明天"）
+│   └── global.d.ts                    # `declare module "*.css"`，见第 2 节
+├── .env                               # DATABASE_URL（gitignore）
+├── .claude/launch.json                # 本地 dev server 配置
+└── package.json
+```
+
+> **接口一律走 Route Handlers（`src/app/api/`），没走 Server Actions。** 最初设计里写的是 `app/actions/*.ts`。改的原因：评分是客户端组件在交互中调用的，用 `fetch` 打 `/api/review` 比 Server Action 更好调试（浏览器 Network 面板直接看到请求和响应），也方便以后加「离线排队重试」这类逻辑。
+
+---
+
+## 4. 数据模型
+
+### 4.1 Prisma Schema
+
+> **注意**：SQLite 下 Prisma **不支持 `enum`**，所以状态字段用 `String` + 应用层校验。
+> 时间统一存 **UTC**，展示时转本地时区。
+
+```prisma
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")   // file:./dev.db
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// 书的单元划分 = 一个主题 Chapter。结构已在步骤 0 确认（见 plan.md 3.3）
+model Unit {
+  id         Int    @id @default(autoincrement())
+  chapterNo  Int    @unique              // 1..22
+  name       String                      // 如 "自然地理"
+  startPage  Int?                        // 书页码，便于和原书对照
+  words      Word[]
+}
+
+/// 单词本身。与用户无关，所有用户共享
+model Word {
+  id          Int     @id @default(autoincrement())
+  headword    String                     // 单词原形
+  phonetic    String?                    // 音标。来自 ECDICT，不用 OCR 结果
+  pos         String?                    // 词性，如 "n. v."
+  meaningCn   String                     // 中文释义（来自 ECDICT）
+  tags        String?                    // 考试标签，如 "ielts cet6"（ECDICT 的 tag）
+  bncRank     Int?                       // BNC 词频排名
+  frqRank     Int?                       // 当代语料库词频排名
+  unitId      Int
+  unit        Unit    @relation(fields: [unitId], references: [id])
+  orderInUnit Int                        // 在单元内的顺序，保留书的编排
+
+  // ---- 以下为「书中原创内容」，受版权保护 ----
+  // 公开分享时应整体关闭（置空或不上线），基础词条不受影响
+  collocation String?                    // [搭] 搭配，书中原文
+  etymology   String?                    // 词根词源，书中原文
+  cultureNote String?                    // 无标签的中文文化背景段落，书中原文
+  examples    WordExample[]
+
+  progress    UserWordProgress[]
+  logs        ReviewLog[]
+
+  @@unique([unitId, orderInUnit])
+  @@index([headword])
+}
+
+/// 书中的例句。同样属于书籍原创内容
+model WordExample {
+  id         Int    @id @default(autoincrement())
+  wordId     Int
+  word       Word   @relation(fields: [wordId], references: [id], onDelete: Cascade)
+  en         String                      // 英文例句
+  cn         String?                     // 中文翻译
+  orderIndex Int    @default(0)
+
+  @@index([wordId])
+}
+
+model User {
+  id        Int            @id @default(autoincrement())
+  name      String         @unique
+  createdAt DateTime       @default(now())
+  progress  UserWordProgress[]
+  logs      ReviewLog[]
+  settings  UserSettings?
+}
+
+/// ★ 核心表：每个用户 × 每个单词 一行
+model UserWordProgress {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  wordId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word   Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  // ---- FSRS 状态，直接映射 ts-fsrs 的 Card ----
+  // SQLite 没有 enum，state 用字符串 + 应用层校验（见 lib/srs.ts）
+  stability     Float    @default(0)
+  difficulty    Float    @default(0)
+  dueAt         DateTime @default(now())   // 下次到期时间
+  state         String   @default("new")   // new | learning | review | relearning
+  scheduledDays Int      @default(0)       // 当前这次排到的间隔（天）
+  learningSteps Int      @default(0)       // 处在第几个学习步长
+  reps          Int      @default(0)
+  lapses        Int      @default(0)
+  lastReviewAt  DateTime?
+  createdAt     DateTime @default(now())   // 首次作答时间，用于算「今日新学」和「今日复习」
+
+  @@unique([userId, wordId])
+  @@index([userId, dueAt])       // ★ 取到期队列的主查询
+  @@index([userId, createdAt])   // 今日新学计数
+}
+
+/// 每次作答流水。用于统计，不可变
+model ReviewLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  wordId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word       Word     @relation(fields: [wordId], references: [id], onDelete: Cascade)
+  rating     Int                              // 1=忘了 2=困难 3=一般 4=简单
+  reviewedAt DateTime @default(now())
+  elapsedMs  Int?                             // 停留时长，用于分析
+
+  @@index([userId, reviewedAt])
+  @@index([wordId])
+}
+
+model UserSettings {
+  userId           Int     @id
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dailyNewLimit    Int     @default(20)
+  dailyReviewLimit Int     @default(200)
+  accent           String  @default("uk")     // uk | us
+  autoSpeak        Boolean @default(false)
+}
+```
+
+### 4.2 设计要点
+
+**为什么 `Word` 和 `UserWordProgress` 分开？**
+
+`Word` 是共享的不变数据。`UserWordProgress` 是「用户 × 单词」的交叉表。分开之后：
+- 多用户天然支持：加一个用户 = 建一套 progress 记录，词库不动
+- 词库更新（比如修正释义）不会影响任何学习进度
+- 统计查询只扫 progress 表，不用碰词表
+
+**为什么存 `orderInUnit`？**
+
+这是这本书的价值所在——「逻辑词群记忆法」把相关的词编在一组。顺序丢了，这本书就退化成普通词表了。
+
+**`@@index([userId, dueAt])` 是性能关键**：首页和取队列每次都要查「该用户所有 `dueAt <= now` 的词」，没有这个复合索引会全表扫。
+
+**为什么只存一份音标？**
+
+原设计里是 `phoneticUk` / `phoneticUs` 两个字段。下载 ECDICT 实测后发现它**只有一份音标**（实测 `atmosphere` → `'ætmәsfiә`、`oxygen` → `'ɒksәdʒәn`），分不出英式美式。与其编造第二个字段，不如老实存一个 `phonetic`，UI 上就显示「音标」，不标英/美。以后真拿到美式音标（比如接另一个数据源）再加字段也不难。
+
+**音标一律来自 ECDICT，不用 OCR 的结果**——OCR 的音标完全不可靠（实测 `hydrogen` 被认成 `/'pksıdzən/`）。另外 ECDICT 用西里尔字母 `ә`(U+04D9) 当中央元音，导入时统一换成 IPA 的 `ə`(U+0259)。
+
+**为什么例句单独建表？**
+
+有两个原因，第二个更重要：
+
+1. 一个词可能有多条例句，一对多是自然结构
+2. **版权隔离**。`collocation` / `etymology` / `WordExample` 这三样都是**书中原创内容**，受版权保护；`headword` / `phonetic` / `meaningCn` 来自 ECDICT，不受影响。以后若要公开分享，只需把这三样置空或不上线，**基础词条不动、数据库不改**。如果在提取阶段就把例句拼进 `meaningCn`，将来就得重建整个词库。
+
+---
+
+## 5. FSRS 集成（核心模块 `lib/srs.ts`）
+
+### 5.1 概念映射
+
+ts-fsrs 的 `Card` 对象 ↔ 数据库字段：
+
+| ts-fsrs Card 字段 | 数据库字段 | 说明 |
+|---|---|---|
+| `due` | `dueAt` | 下次到期时间 |
+| `stability` | `stability` | 记忆稳定度（天） |
+| `difficulty` | `difficulty` | 单词难度 1–10 |
+| `state` | `state` | New/Learning/Review/Relearning |
+| `reps` | `reps` | 复习次数 |
+| `lapses` | `lapses` | 遗忘次数 |
+| `last_review` | `lastReviewAt` | 上次复习时间 |
+
+### 5.2 对外接口
+
+**`lib/srs.ts` 是唯一允许 `import ts-fsrs` 的文件。** 其他模块要用 FSRS，只能走这里的函数。
+
+实际的职责划分和最初设计有两处不同，都是实现时才看清的：
+
+**一、`Rating` 类型挪到了 `lib/rating.ts`。** 本来它是 srs.ts 的一部分，但 `RatingButtons.tsx` 这类**客户端组件**也要用它——而 srs.ts 顶部 import 了 Prisma。客户端组件引一下 srs.ts，打包器就会去解析 Prisma 的 Node 专用代码，编译直接炸。所以类型和四档文案单独放一个不碰数据库的文件，两边都从它引。
+
+**二、`getDueQueue` 拆成了 `buildSession`（在 `lib/session.ts`）。** 取队列要联查 Word / Unit / WordExample 三张表，还要算今日配额，塞在 srs.ts 里会让「排程算法」和「业务查询」糊成一坨。现在 srs.ts 只管 FSRS 怎么算，session.ts 管「今天该看哪些词」。
+
+```ts
+// lib/srs.ts —— 只管 FSRS 排程
+export const FSRS_PARAMS = {
+  request_retention: 0.9,
+  maximum_interval: 36500,
+  enable_fuzz: true,
+  enable_short_term: true,
+  learning_steps: ["1m", "10m"],
+  relearning_steps: ["10m"],
+}
+
+/** 提交一次评分：事务内 upsert 进度行 + 插入流水 */
+export async function submitRating(
+  userId: number, wordId: number, rating: Rating, elapsedMs?: number
+): Promise<{ nextDueAt: Date; intervalMs: number; previews: Record<Rating, Date> }>
+
+/** 预览四档到期时间。内部只调一次 repeat()，四档共用结果 */
+export function previewIntervals(row: CardRow | null, now?: Date): Record<Rating, Date>
+
+/** 新词的起始卡片状态 */
+export function emptyCard(now?: Date): CardRow
+/** 进度行 ↔ ts-fsrs Card 的双向转换 */
+export function toCardInput(row: CardRow, now: Date): CardInput
+export function cardToFields(card: Card): {...}   // 写库用
+export function cardToRow(card: Card): CardRow    // 喂给 previewIntervals
+```
+
+```ts
+// lib/session.ts —— 管「今天该看哪些词」
+export async function buildSession(
+  userId: number,
+  opts?: { unitId?: number; newLimit?: number }
+): Promise<QueueItem[]>
+
+export async function getTodayStats(userId: number): Promise<TodayStats>
+```
+
+`QueueItem` 里除了词条内容，还带 `isNew` 和 `previews`（四档到期时间的 ISO 串）——**到期时间在服务端算好一次性下发**，客户端点翻面时不必再问一次接口。
+
+### 5.3 内部实现要点
+
+```ts
+import { fsrs, generatorParameters } from 'ts-fsrs'
+
+const scheduler = fsrs(generatorParameters(FSRS_PARAMS))
+```
+
+`FSRS_PARAMS` 是常量对象，模块加载时构造一次 scheduler 复用到进程结束。（ts-fsrs 5.4 的 `generatorParameters` 已经内置了 `w` 权重数组的默认值，不用自己传。）
+
+**新词初始化**：用 `createEmptyCard(now)`，`state = New`。
+
+**评分**：
+```ts
+const { card: next, log } = scheduler.next(card, now, grade)
+```
+
+**预览**用 `scheduler.repeat(card, now)`——它一次算出四档各自的结果，正好拿来显示按钮下方的「下次：3 天后」。两者分工明确：`repeat` 只读不写、用来预览；`next` 出确定的一档、用来落库。
+
+**必须持久化的字段**：除了稳定度/难度/到期时间，还有 `scheduled_days` 和 `learning_steps`。前者是「当前这次排到的间隔」，后者是「处在第几个学习步长」。**不存这两个，每次复习都会从第 0 步重算**，学习步长会反复回到第一步，调度就错了。这是 FSRS 落地最容易踩的坑。
+
+**`elapsed_days` 是 deprecated 字段**：ts-fsrs 5.x 从 `card` 里删了它，但类型定义里还留着（标 deprecated）而 `CardInput` 要求存在。所以 `toCardInput()` 里显式补一个 `elapsed_days: 0`，否则 TS 报缺字段。
+
+**事务性**：`submitRating` 在一个 `prisma.$transaction` 里完成两件事——upsert `UserWordProgress` + 插入 `ReviewLog`。只做一半会导致统计数据错乱。
+
+**时区**：FSRS 内部按 UTC 计算天数差。所有 `dueAt` 存 UTC，UI 展示时转本地。
+
+### 5.4 FSRS 参数（阶段二已定）
+
+| 参数 | 取值 | 说明 |
+|---|---|---|
+| `learning_steps` | `["1m", "10m"]` | 新词的学习步长。答「忘了」→ 1 分钟后；答「一般」→ 10 分钟后 |
+| `relearning_steps` | `["10m"]` | 复习态的旧词答错后，10 分钟再来一次 |
+| `request_retention` | `0.9` | 目标记忆保持率。FSRS 按「90% 概率还记得」来安排间隔 |
+| `maximum_interval` | `36500`（天） | 上限，等于不设上限（100 年），避免长间隔被截断 |
+| `enable_fuzz` | `true` | 加随机扰动，避免所有词挤在同一天复习 |
+| `enable_short_term` | `true` | 启用学习步长，新词才能在同一次会话里重复出现 |
+
+阶段二实测（见 `docs/plan.md` 验收记录）：新词评「简单」→ 9 天；复习态评「简单」→ 把 3 天的间隔拉到 10 天。**参数直接决定「每天要复习多少词」，改它们前先想清楚**，改完要连背几天才看得出影响。
+
+### 5.5 学习卡片的版面约束（`WordCard.tsx`）
+
+卡片是「正面只有单词 + 喇叭，点击翻面」的自测结构，**翻面本身不能去掉**——去掉就等于把回忆测试降级成阅读理解。背面**内容一次性全展开，没有折叠、不用点开**。
+
+**卡片内部不滚，字号不缩；装不下就让整页滚。**
+
+这是 2026-10-16 的方向反转。此前两轮都在追「一屏全显」：先给卡片限高让正文自己滚，再改成正文字号逐档自适应（17px→11.22px）把内容压进一屏，实测矮窗口下字被压到 **11.22px**。用户实机用了几天后反馈**字太小**，明确要「字号大一点、放不下就整页滚」。于是那套自适应整套拆了。
+
+代价是长词的页面会滚——**这是接受的，不是缺陷**。实测 `disaster`（背面 732px）在 1280×800 下整页溢出 121px、375×812 下 215px。
+
+背面由三块竖向 flex 组成：
+
+| 块 | 类 | 行为 |
+|---|---|---|
+| 头部 | `shrink-0` | 单词 + 音标 + 词性 + 章节。常驻 |
+| 正文 | 无特殊类 | 释义 + 例句 + 搭配 + 词源 + 派生 + 文化背景。**自然撑开，不滚不裁** |
+| 底部 | `shrink-0` | 四个评分按钮 |
+
+正文字号只有一个来源：
+
+```tsx
+const BASE_FONT = 18;
+```
+
+挂在内层容器的 inline `style` 上，正文里所有字号和间距全按 `em` 写（例句 0.88em、中文翻译 0.82em、区块间距 1.6em）。改这一个数，整块跟着变。这里曾经是 17px 并会按窗口高度逐档缩到 11px，2026-10-16 删掉缩放、提到 18px。
+
+**矮窗口那套紧凑尺寸（`max-height: 44rem`）也一并删了**：单词 `text-3xl→xl`、音标 `sm→xs`、卡片内左右内边距 `6→4`、评分按钮 `py-3→py-2`、正文区块间距 `1.6em→0.65em`、释义行高 `1.6→1.45`、隐藏卡片下方的键盘提示（`WordCard.tsx` 和 `RatingButtons.tsx` 两处）。它们和字号缩放是同一件事的两半——都是为了把内容塞进一屏。
+
+**翻面容器的高度要锁**（`sceneRef`）。这是删掉 `max-height` 之后必须补上的一环。
+
+正反两面叠在同一个 grid 单元格里做 3D 翻转（`col-start-1 row-start-1`，见 `globals.css` 的 `.flip-card`），grid 行高取两者的**较大值**。不干预的话，一个例句多的长词会顺手把正面那张空卡也撑到同样高：单词跑出屏幕、「先退出」被推走，而且**还没翻面整页就已经出现滚动条**。锁到当前露出来的那一面之后，正面恒为一屏内的矮卡（实测恒 320px），背面随内容长。
+
+三处缺一不可：
+
+1. **两面都要 `self-start`。** 不加的话它们会被拉伸到行高，`offsetHeight` 量出来是同一个数，等于没锁。
+2. **外层 `.flip-scene` 必须 `overflow: hidden`。** 超出锁定高度的另一面照样会撑大 document 的滚动高度——实测把一个面设成 `position: absolute` + `visibility: hidden` 并去掉裁剪，`documentElement.scrollHeight` 仍是 855（基线 800，**多 55px**）。**绝对定位不能替代裁剪**，这个直觉是错的。
+3. **裁剪不能加在 `.flip-card` 上。** 按规范，非 `visible` 的 `overflow` 会把 `transform-style` 强制成 `flat`，翻转当场失效。裁剪必须待在父元素 `.flip-scene` 上。
+
+用 `useLayoutEffect` 而不是 `useEffect`，否则用户会先看到一帧被撑开的布局再跳到正确高度。窗口 `resize` 要重测——转屏、拉窗口都会让同一面重新折行。
+
+**翻转过程本身有两处会被裁，都已处理：**
+
+- **不加 `perspective`。** 有透视时近端半张卡会被放大，转起来之后包围盒会超出静止时的外框——实测 1280 宽下**最大超出 9.96px（在 15° 附近）**，卡片的边会在翻转中途被削掉一截。去掉透视走正交投影后，0–180° 全程包围盒不超出静止外框（实测宽度 736 → 0 → 736），既不裁边，也不用留任何"大概多少像素"的余量。代价是少了点纵深，420ms 里看不出来。
+- **变矮要延后半个翻转。** 翻回正面时外框瞬间收矮的话，**还在往回转的背面（它比正面高）下半截会被裁掉**。把高度过渡设为 `calc(var(--flip-duration) / 2)`，并在「这次比上次矮」时把 `transitionDelay` 也设成同一个值——延后到卡片转到 90°（侧面）那一刻再收，那时画面里的已经换成矮的正面，怎么收都裁不到。**变高必须立刻执行**，否则背面一转出来就被裁。实测（读 Web Animations API 的关键帧）：变高 `320 → 732`、delay **0**；变矮 `732 → 320`、delay **210ms**。
+
+`--flip-duration: 420ms` 定义在 `.flip-scene` 上，`.flip-card` 的 `transform` 和 `.flip-scene` 的 `height` 都读它，免得两处对不上。
+
+视口实测（**都停在 18px**）：
+
+| 视口 | 词 | 正面高 | 背面高 | 整页溢出 |
+|---|---|---|---|---|
+| 1280×800 未翻 | disaster | 320 | 732 | 0 |
+| 1280×800 已翻 | disaster | 320 | 732 | 121px |
+| 375×812 已翻 | disaster | 320 | 838 | 215px |
+| 613×586 已翻 | horizon | 320 | 603 | 206px |
+| 注入 2000px 长内容 | — | **320** | 2017 | 1406px |
+
+上一版 613×586 被压到 11.22px，现在满档 18px。正面高在任何情况下都是 320——注入两千多像素内容也不变。上一节那个「271px 极窄屏例外」也随之消失：正文不再需要挤进任何高度。
+
+换词时会把页面滚回顶部（`window.scrollTo(0, 0)`，跟 `item.wordId` 走）。长词翻面后整页变长，用户多半滚到下半页读完再评分；不定回顶部的话下一个词会从中间开始显示——正面那张卡整个在屏幕上方，看上去就是一片空白。
+
+**六个坑：**
+
+1. **别把裁剪加到 `.flip-card` 上**，`preserve-3d` 会被强制成 `flat`，翻转失效。
+2. **别用绝对定位代替裁剪**，实测不管用（多 55px），见上。
+3. **别给 `.flip-scene` 加 `perspective`**，实测量到翻转中途超出静止外框约 10px。
+4. **`self-start` 不能省**，省了锁高就锁了个寂寞——两面量出来一样高。
+5. **延迟收矮的判据是「这次比上次矮」**，用一个 `useRef` 记住上一次的高度；无条件设 delay 会让变高也等 210ms，背面一转出来就被裁。
+6. **`prefers-reduced-motion` 下两个元素的 transition 都要关。** 只关 `.flip-card` 的话卡片瞬间转过去、外框还在慢慢收放，比完全不动效更怪。
+
+> **未验到的部分**：高度的收放动画本身没能观察到运行过程——浏览器预览面板隐藏时 CSS transition 是冻结的（`style.height` 已是目标值，`getBoundingClientRect` 停在起点）。验的是机制（关键帧、210ms 时长、0ms / 210ms 延迟）和静止后的布局，**不是动画过程**。
+
+正文区绑了「点击翻回正面」。**这个 onClick 只挂在正文块上，不挂整张背面**——否则评分失败时（请求已被 `catch`，卡片留在原地）点击会冒泡触发翻面，把用户刚看的词翻走。同理 `SpeakButton` 内部有 `e.stopPropagation()`。
+
+---
+
+## 6. 会话队列逻辑（`lib/session.ts`）
+
+```ts
+async function buildSession(userId, opts): Promise<QueueItem[]>
+```
+
+**队列构成与顺序**：
+
+```
+1. 取所有 dueAt <= now 且 state != New 的复习词   ← 优先！旧词不复习会滚雪球
+2. 取新词，数量 = min(dailyNewLimit - 今日已学新词数, 剩余)
+3. 总长度受 dailyReviewLimit 限制（超出部分顺延，不是丢弃）
+```
+
+**会话内的重入队**（客户端 `StudySession.tsx` 负责）：
+- 某词评分后，接口返回 `nextDueAt`
+- 若该时间**落在本次会话范围内**（`isWithinSession()`，目前取 ≤20 分钟），就把这个词塞回**队尾**，本次会话内再见一次
+- 具体延迟由 FSRS 的 learning step 决定，不由我们拍脑袋
+- 队列元素换 key（`${wordId}-${rated}`）强制卡片重建，翻回正面
+
+**今日已学新词数怎么算？**
+
+`UserWordProgress.createdAt >= 今天零点` 的行数。**最初设计是从 `ReviewLog` 里数 `reps === 1` 的记录，实现时改掉了**——`reps === 1` 不一定是新词首次作答（复习态答错再答对也会让 reps 变化），而进度行的 `createdAt` 就是「这个词第一次出现」的确切时刻，语义干净得多。为此在 `UserWordProgress` 上加了 `@@index([userId, createdAt])`。
+
+**今日复习数怎么算？**
+
+不能简单数今天的全部流水——当天新学的词在会话内被反复提问也会写流水，那不算「复习」。判据是**这个词的进度行创建于今天之前**：
+
+```ts
+prisma.reviewLog.count({
+  where: {
+    userId,
+    reviewedAt: { gte: today },
+    word: { progress: { some: { userId, createdAt: { lt: today } } } },
+  },
+})
+```
+
+**两处都必须是数据库查询，不能用内存计数**，否则刷新页面就重置了。
+
+---
+
+## 7. 提取流水线设计（Python，零依赖）
+
+### 7.1 `extract_images.py`
+
+**必须按 PDF 对象结构解析**，不能扫 `FFD8`（实测 1002 个标记 vs 334 张真图）。
+
+思路：
+1. 扫描文件的间接对象：`N 0 obj ... endobj`
+2. 筛出含 `/Subtype /Image` 且 `/Filter /DCTDecode` 的对象
+3. 读该对象的 `/Length` 字段，从 `stream` 关键字后精确取 N 字节
+4. 校验取出的字节以 `FFD8` 开头、`FFD9` 结尾（如果不符，记录警告）
+5. 按对象在文件中的顺序编号输出 `data/pages/001.jpg`
+
+**注意**：PDF 的 `stream` 关键字后跟 `\r\n` 或 `\n`，`/Length` 也可能写成间接引用（`/Length 12 0 R`）。两种情况都要处理。
+
+### 7.2 `ocr_pages.py`
+
+**为什么需要**：我读不了扫描图（Read 工具返回 `[Unsupported Image]`），PDF 又没有文字层（`/Font` = 0），所以只能本地 OCR。
+
+**技术选择**：`rapidocr` + `onnxruntime`（PP-OCRv6 模型随包自带，本地 CPU 推理，**不联网**）。比 PaddleOCR 装得干净，比 EasyOCR 轻（不用 torch）。
+
+**双栏处理是关键**：这本书每页两栏。OCR 返回的是一堆散块，若只按 y 坐标排序，左右两栏会**交错串行**，词条结构就毁了。做法：找一个竖直切分位置 x，使「不跨越它」的文字块最多（允许 ≤15% 的块跨越，因为少量标题会横跨两栏），然后**左栏读到底，再读右栏**。
+
+**输出**：`data/ocr/NNN.txt`（纯文本）+ `data/ocr/NNN.json`（带坐标与置信度）。
+
+**实测**：约 5–13 秒/页，334 页约 40 分钟。英文单词和中文释义准确；**音标不可靠**（`hydrogen` 被识别成 `/'pksıdzən/`，正确是 `/'haɪdrədʒən/`）。所以音标一律不采用 OCR 结果，由 ECDICT 提供。
+
+### 7.3 `build_vocab.py`
+
+- 输入：`data/ocr/*.txt`（配合 `.json` 里的坐标辅助判断词条边界）
+- 输出：`data/words.raw.json`
+
+**词条识别规则**（基于步骤 0 实测到的格式）：
+
+一条词目以 **`单词 + /音标/`** 开头，后面跟着若干行：
+- `词性. 释义`（如 `<词性. 释义>`）
+- `[例]` 英文例句 + 中文翻译（0~n 条）
+- `[搭]` 搭配（可选）
+- 词根词源（可选，形如 `<词根>+<词根>→<释义>`）
+
+**难点**：这些内容都会换行折断（长例句必然折行），所以**不能简单按行切**。判定词条边界的依据是「这一行是否以 `单词 + /音标/` 的模式开头」。`data/ocr/*.json` 里的块坐标可作辅助（词目行字号更大、更靠左）。
+
+输出结构：
+
+```json
+{
+  "chapters": [
+    {
+      "chapterNo": 1,
+      "name": "自然地理",
+      "startPage": 1,
+      "words": [
+        {
+          "headword": "atmosphere",
+          "orderInUnit": 1,
+          "rawMeaning": "<词性. 释义>",
+          "examples": [{ "en": "...", "cn": "..." }],
+          "collocation": "<搭配组>",
+          "etymology": "<词根>+<词根>→<释义>"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**词条边界的两个坑（2026-10-15 修）**
+
+边界既然靠「这一行是不是词目行」来判，那么**词目行之后的任何无标签行都会归给当前词条**。于是：
+
+1. **全书最后一个词会吞掉整页索引。** 书末索引（第 312 页起）的行是「单词 + 页码」格式，不带词目行特征，被当成它的正文一路累积下去。实测 `incidentally`（Ch22 第 51 个、书第 311 页，**全书最后一个词**）的 `note` 字段装了 **16793 字符**的索引页（`<单词><页码><单词><页码>…`）。第 3 步虽然有 `page >= INDEX_PAGE` 过滤，但拦的是**词条的起始页**，拦不住 body 里后续页的行。修法：在切分阶段（第 2 步）就直接丢掉 `page >= INDEX_PAGE` 的行。
+2. **每章最后一个词的 `note` 尾部会粘一个页码。** 实测全书 **51 处**（Ch1 `1320`、Ch3 `3`、Ch4 `4`、Ch5 `5`、Ch6 `6`、Ch9 `9`、Ch10 `10`、Ch11 `11`…）。修法：丢弃整行纯数字。
+
+改完重跑验证：词数仍是 3610，差异**只有那 51 个 `note` 字段**，headword / meaning / examples / collocation / etymology 一字未动。
+
+> **数据侧也已对齐（2026-10-15）**。`incidentally` 是手工清的，其余 51 处用 `scripts/fix_notes.py`（改词表）+ `scripts/update_notes_db.ts`（改库）原地修掉，差异清单落在 `data/notes-changes.json`，两份脚本共用。两个脚本都幂等，修完重跑报 0 改动。修完复查：库中与词表不一致的词条 **0 处**、超 800 字符字段 **0 处**、`UserWordProgress` / `ReviewLog` 一行没动。
+
+**第三类噪声：整条无汉字的 `note`（2026-10-16 修）**
+
+`note` 是个兜底桶——归不进释义 / 例句 / 搭配 / 词源的无标签行全落进来。清完页码之后，桶里还剩 **28 条整条没有汉字的**：音标被 OCR 认成乱码（`flour` → `porıd3`、`sausage` → `f1∫7`、`midnight` → `əuvə'nait`）、隔壁词条的残片（`inventory` → `content`、`versatile` → `add`）、页码符号串（`June` → `21 23 24 25 2728 29 30`）。另有 3 条（`mercury` / `embark` / `wreath`）的页码粘在文字同一个 OCR 行里，`re.fullmatch(r"\d+")` 拦不住。
+
+修法：`parse_entry` 收尾时，**整条 `note` 一个汉字都没有就清空**。判据必须是「整条」而不是「某一行」——一条 note 里夹着纯英文的名人名言（泰戈尔、达尔文的原文）是正常的，按行丢会把它们一起删掉（第一版就是按行写的，diff 里逮到 20 多处内容被削）。改完重跑：**28 条 `note` 清空，其余字段零变化**；数据侧沿用 `fix_notes.py` / `update_notes_db.ts`，清单扩到 77 条，两边重跑都报 0 改动。
+
+> **还没动的一类**：73 个词的书内释义被 OCR 切进了 `note`——`n.` 被认成 `n1.`（`meteorite` → `n1. 陨石`）、或行首多一个页码（`dorm` → `5 n. 宿舍`），没匹配上词性正则，于是整行释义落进 `note`、`meaning` 反而是空的。不影响背诵（卡片取 ECDICT 的 `meaningCn`，缺的只是 `bookMeaning` 和 `pos`），是独立的解析精度问题，尚未处理。
+
+### 7.4 `check_with_ecdict.py`
+
+**数据来源**（已通过 GitHub API 查到真实资源，非猜测）：
+
+`https://github.com/skywind3000/ECDICT/releases` → tag `1.0.28`，可选：
+
+| 资源 | 大小 | 说明 |
+|---|---|---|
+| `ecdict-stardict-28.zip` | 67 MB | StarDict 格式，**实际用的这个** |
+| `ecdict-sqlite-28.zip` | 207 MB | 直接是 SQLite 库 |
+
+> ⚠️ 这份数据是 **2017 年**的，比较老。对雅思核心词影响很小，但缺失项要记入可疑清单人工补。
+
+**实测的数据格式**（不是照抄文档，是下载后打开看的）：
+
+StarDict 三个文件，`.ifo` 里写着 `sametypesequence=m`——意思是 `.dict` 里每条记录都是**一段纯文本、没有类型前缀**。一条记录长这样：
+
+```
+*['ætmәsfiә]   -K3
+n. 大气, 空气, 气氛
+[医] 大气; 大气压
+(高研四六托 2217/1855)
+```
+
+- 第一行 `*` + `[音标]` + 填充
+- 末行 `(考试标签 词频)`，标签是单字中文缩写（中=zk 高=gk 四=cet4 六=cet6 研=ky 托=toefl 雅=ielts 宝=gre），词频是 `bnc/frq`
+- 中间是中文释义，可能多行，带 `[医]` `[网络]` 这类领域标记
+
+`.idx` 是「词\0 + 4 字节大端偏移 + 4 字节大端长度」的定长记录流，按字节序排。
+
+**流程**：
+
+1. 解压 `ecdict-stardict-28.zip`（约 200 MB，只做一次）
+2. 一遍扫过 `.idx`，把要找的词捞出来。**不建全量索引**——ECDICT 有 340 万条，全塞进内存不合算，而我们只要几千个词
+3. 按偏移读 `.dict` 拿记录，解析成 `phonetic` / `meaningCn` / `tags` / `bnc` / `frq`
+4. 命中 → 补字段；未命中 → 记入可疑清单（**不静默丢弃**）
+5. 输出 `data/words.clean.json` + `data/ecdict-report.md`
+
+**两个实测踩到的坑**：
+
+- **ECDICT 只有一份音标**，分不出英式美式。所以数据模型里的 `phoneticUk` / `phoneticUs` 合并成了一个 `phonetic` 字段（见 4.1）。
+- **它用西里尔字母 `ә`（U+04D9）冒充中央元音 `ə`（U+0259）**。看着一样，字节不同，不换掉的话检索和显示都会出问题。
+- 还遇到「有 `cores` 却没有 `core`」这种，所以查不到时会再试一遍派生形（`+s/+es/+ed/+ing` 等），只在原形没命中时才用，不会污染正常结果。
+
+### 7.5 `parse_index.py`（书末全书索引）
+
+书末第 312–325 页（图片 321–334）是一份按字母排序的**全书索引**：单词 + 三位补零的书页码，横排 2–4 个子列。
+
+**这是整条流水线里最重要的一次发现**：它是出版社自己排的完整词表，且 OCR 质量**远好于正文**（正文里被认烂的词，这里往往还在，还顺带给出页码）。于是它同时充当两个角色——补漏的数据源、以及交叉校验的基准答案。
+
+**版面怎么读**：页码右对齐，OCR 会把一行拆成几个块，同一行的块按 x 排完就是「单词 页码 单词 页码 …」的流水。所以**不需要判断列**，按行分组后扫描「单词后面紧跟一个 1–3 位数字」即可。
+
+**已知的 OCR 错**：整页的页码会一起认错（`098` 认成 `860`、`099` 认成 `660`，同一页几条一起错）。**不要去猜**（`860` 取后两位是 60，离真值 98 更远）——这条词照样收进词表，只是记成「页码不可用」。宁可没有页码，也不要归错章。
+
+> 这里改过一版：最初把「页码不可用」的词整条丢掉，结果「词表 vs 索引」的按章对照虚报第 7 章少 29 个词——那批词在索引里明明都在，只是整页页码被认花了。**词可以没有页码，但不能少。**
+
+### 7.6 `reconcile_index.py`（用索引给词表补漏纠错）
+
+拿索引对齐词表，做四件事：
+
+| 动作 | 判据 |
+|---|---|
+| **修** 改拼写 | 词典查不到、但索引里有**唯一**近形，且索引页码落在这条词附近（±3 页） |
+| **补** 漏词 | 索引里有、词表里连近似拼写都没有的词，按索引页码归章补进去 |
+| **删** 伪词 | 多词词条 + 词典查不到 + 索引里连近形都没有（真词不会这样） |
+| **并** 去重 | 同一个词在同一章出现两次（正文与插图各排了一次），保留位置靠前的、内容取更全的 |
+
+判据一律要求「**恰有一个**候选」——宁可漏改也不乱改。把一个真词换成书里没有的词，比留着一个错字更糟。
+
+**加页码邻近约束的由来**：只按「近形唯一」判，曾把第 3 章的 `Orcart` 改成 `cart`、`Cestox` 改成 `custom`——那是别的章节里拼写相近的无关词。加上「索引页码必须落在这条词所在页附近」之后收敛。
+
+**实际效果**：改名 7、补词 31、删伪词 19、同章去重 28。最终 **3594 条词 / 3552 个词形 / ECDICT 通过 3580（99.6%）**，22 章的「词表 vs 索引」差值全部落在 ±6 内。
+
+脚本**幂等**：跑第二遍不会再改任何东西。
+
+### 7.7 `verify_vocab.py`（旁证，非主依据）
+
+拿**每页底部的「本页词索引条」**当基准，反查解析漏了哪些词——这条东西在 `build_vocab.py` 里是被丢掉的（见 `FOOTER_RATIO`），正好反过来当基准答案用。
+
+但它比书末索引噪声大得多：页脚会混进 running head（`IELTS` / `Chapter`）和版权页文字，报出的「疑似真漏词」有一大半是假的。**已不作为主要依据**，保留作旁证。
+
+### 7.8 `fix_spacing.py` + `update_spacing_db.ts`（修例句单词粘连）
+
+**问题**：OCR 会把相邻单词粘成一个 token——`examinationcreated` 本该是 `examination created`。2026-10-15 量化：3635 条例句里 486 条（13.4%）中招，搭配 3.3%、词源 1.6%。
+
+**做法**：拿 ECDICT 的 112 万条词形当白名单，给每个粘连 token 找一组词典词、拼起来恰好还原它。**不用重跑 OCR。**
+
+**切分用 DP**（动态规划，求最小总代价的切法），每片代价：
+
+```
+cost(piece) = PIECE_PENALTY + int(base * SCORE_SCALE) - len(piece)
+base        = min(NO_EVIDENCE, log10(rank + 1) * RANK_FACTOR)
+```
+
+`rank` 是 ECDICT 词频（越小越常见）。含义是：**常见词便宜、冷僻词贵、多切一片就多付一份 `PIECE_PENALTY`、片段长有奖励**。代价值卡在「比任何真实词都贵、比无证据碎片便宜」之间，所以只有真凑不出来时才走「留几个字母原样不动」。
+
+**三个坑（这节最值钱的部分，都是实测撞出来的）**
+
+| # | 坑 | 表现 | 结论 |
+|---|---|---|---|
+| 1 | **「在词典里 = 真词」不成立** | 112 万词形里混着人名（`achair` 标的是「阿恰伊尔(俄)」，地名）、缩写（`tsee`）、OCR 垃圾（`ofspring` 的释义是网络词「春天的来临」），**甚至把粘连本身也收了**（`hadto` 有词条、释义 `v. 必须`）。第一版按「token 在词典里就跳过」过滤，整批真实粘连被放过 | 不能拿词典当布尔开关，得分证据强弱 |
+| 2 | **ECDICT 词频数据不可靠** | 实测 `is`=24648（它是最常用的词之一）、`was`=41040、`links`=40605、`shew`=25797，而 `are` / `were` / `has` / `had` / `been` / `does` 干脆**没有词频** | 曾试过「两片词频都 < 5000 才切」，结果 `Hewas` / `townwas` / `thelinks` / `adoptedour` 全漏切。**词频只能当 DP 的打分权重，不能当开关。** 只手工修确知坏掉的：`is` → 9 |
+| 3 | **完整词被拆** | `plummeted` / `mosquitoes`——ECDICT 收了词形却没配词频，于是被切成 `plummet + ed` | 末片是纯词尾（`ed`/`es`/`ing`）且整词在词典里 → 判为拆坏了，回退 |
+
+**最终判据（按优先级）**
+
+1. 整词在词典里**且有实据**（自己词频 / `[原型]` 行 / 不规则变化表）→ 不碰
+2. 词性标粘连（`usuallyadv.` / `estimatev.`）→ **单独认**，不走 DP。这类不能靠通用切分——`usuallyadv` 会被切成 `usually + a + dv`
+3. 其余进 DP。切完再过两道闸：
+   - 末片是纯词尾且整词在词典里 → 拆坏了，回退
+   - 整词在词典里、有正经释义（`n. 水圈` 这种词性标开头的）、但没词频 → **只有每一片都够常见，才认这次切分**
+
+第 3 条最后那闸是整节的核心权衡，为它专门加了一个判据：
+
+```
+hadto        → had + to           两片都超高频      → 切   ✓
+hydrosphere  → hydro(23990) + sphere(3863)  有一片很冷 → 判定是整词，不切 ✓
+```
+
+`hydrosphere` 是真词（`n. 水圈, 水界, 水气`），只是恰好没词频，被当成垃圾切成了 `hydro sphere`——这是在浏览器里实际看到的，回头才补的判据。**代价**：`cannot` / `washbowl` / `allover` 这类真复合词会被切（`can not` / `wash bowl` / `all over`），读起来还算通顺，接受。
+
+**两处细节**
+
+- **缩写保护**：`doesn't` / `couldn't`——正则只吃字母，切到的是 `doesn`，后面还跟着 `'t`。检测到紧跟 `'t` / `’t` 就整块跳过，否则会拆成 `does n't`
+- **只碰英文**：`TEXT_FIELDS = collocation / etymology / derived` 加 `WordExample.en`。中文释义和文化背景（`cultureNote`）不碰——那是中文，没有粘连问题
+
+**落库用 `update_spacing_db.ts`，不重灌**
+
+`prisma/seed.ts` 开头会清空 `UserWordProgress` / `ReviewLog` / `Word` / `Unit` / `User`，重灌会把学习进度一起冲掉。所以改成**整串原位替换**：拿 `spacing-changes.json` 建 `Map(旧文本 → 新文本)`，对 `Word` 三个字段和 `WordExample.en` 做查表替换，每 500 条一个 `$transaction`。
+
+**结果**：3635 条例句改掉 **2655 条、3638 处**；落库 `Word` 914 行 + `WordExample` 2645 行；**进度 3 行 / 流水 4 行 / 用户 1 个一行没动**（`scripts/verify_spacing_db.ts` 复核）。
+
+**已知残余错误**（都是边缘案例，不值得再花力气）
+
+- `Gallard → Gal + lard`（人名）、`andsmashed → ands + mashed`、`Theseais → These ais`、`wasplaying → wasp laying`、`existon → existo n`
+- `junkfood` 这类没切开的零星几个
+- OCR 自身的 `I` → `l` 误认（`l saw a swarm`）约 10 处——**源数据问题，不是脚本的**
+
+**用法**：`python scripts/fix_spacing.py`（**默认 dry-run**，只出报告）、`--apply` 才写文件、`--probe "is,was,the"` 单看某几个词的 ECDICT 记录。
+
+### 7.9 `fix_notes.py` + `update_notes_db.ts`（修 `note` 字段的脏数据）
+
+**问题**：`build_vocab.py` 的 `note` 是个兜底桶，混进两类脏数据——尾部粘页码（51 处）、整条无汉字的纯噪声（28 处 + 3 处行内粘数字）。成因和量级见 7.3，这里只说数据侧怎么对齐。
+
+**做法**：修脚本只解决「以后」，「已经产出的」词表和库还得单独对齐。把旧脚本产物和新脚本产物逐词对比，再叠一轮「整条无汉字 / 尾部含数字」的规则清理，算出 `data/notes-changes.json`（77 条 `{chapterNo, headword, old, new}`），两份脚本共用：
+
+| 脚本 | 改哪 |
+|---|---|
+| `scripts/fix_notes.py` | `data/words.clean.json` |
+| `scripts/update_notes_db.ts` | 数据库的 `Word.cultureNote` |
+
+**几个细节**
+
+- **两个脚本都幂等**：只在「当前值恰好等于清单里的 `old`」时才写，跑第二遍报 0 改动。改数据不像改代码，能放心重跑才敢跑。
+- **同章重名词不能压成单值**：`papaya` 在 Ch12 排了两次（正文一次、插图一次）。第一版用 `Map(headword → note)` 建索引，有差异的那条被同名的空值覆盖掉，整条修复就漏了。改成 `(chapterNo, headword) → note 列表` 才对。
+- **写回 `clean.json` 不能重排格式**：原文件是 1 空格缩进 + CRLF。写之前把 `json.dumps` 的结果和原文做**字节级比对**，不一致就中止——否则真正的改动会被淹没在 79000 行的行尾差异里。
+- **一个词可能压着两条链式变更**：`June` 的 note 先被页码修复动过一次、又被噪声清理动过一次（`132021…` → `21 23…` → 空）。脚本一轮只应用清单里匹配上的那一条，所以清单要先归并——同一个词只留最后一条，前面的必然已经落库了。
+
+**为什么库也走原地更新**：同 7.8，`seed.ts` 会先清空 `UserWordProgress` / `ReviewLog`。
+
+**结果**：词表改 31 个词、库改 30 行（少的一条是伪词 `Cestox`，`verified == false` 没入库）；复查「库与词表不一致 0 处 / 无汉字 `note` 0 条 / 尾部粘数字 0 条 / 进度 3 行、流水 4 行一行没动」。
+
+**已知残余**：另有 73 个词的书内释义被切进了 `note`，已由 7.10 一并修掉。
+
+**用法**：`python scripts/fix_notes.py` 和 `npx tsx scripts/update_notes_db.ts` **都默认 dry-run**，各自加 `--write` 才真写。
+
+### 7.10 解析层三处改进 + 释义归位（2026-10-16）
+
+**问题**：7.9 末尾留下的 73 个词——书里的释义行开头被 OCR 掺了东西，整行落进 `note` 兜底桶，`meaning` 空着：
+
+```
+meteorite   note='n1. 陨石'      n. 的点被认成 1
+dorm        note='5 n. 宿舍'     行首多了一个章号 5
+atlas       note='Ⅱ1. 表格'      整个 n. 被认成罗马数字
+```
+
+卡片显示有 ECDICT 的 `meaningCn` 兜底，背诵不受影响；缺的只是 `bookMeaning` 和 `pos`。
+
+**但一查，影响面远不止 73 个。** 顺着这三条线索挖出三个根因，最终涉及 154 个词、260 处字段，横跨 meaning / note / examples / collocation / derived / etymology 六个字段。
+
+**根因 1：页边章号块（最隐蔽，也是这次最值钱的发现）**
+
+书在**偶数书页的左边缘**印着当前章号，一个大号孤立数字。实测 134 个这样的块落在 x < 115，而正文左栏起点在 x ≈ 115–146。`group_lines` 按 y 距离合并同一行的块，这数字正好和本页顶部第一个词条的释义行齐平，就被并了进去：
+
+```
+n. 宿舍            →  5 n. 宿舍
+(=disk)n.光碟…     →  9 (=disk)n.光碟…
+```
+
+行首不再是词性，`POS_PREFIX_RE` 不认，整行掉进 `note`。同一类污染还散在例句（`a common3 ancestor`）、词源（`希4 腊神话`）、搭配、派生里。
+
+**修法**：`drop_edge_marks(col)` 在分行前先剔掉这类块。三个条件同时成立才剔——内容是个 1~2 位数字、宽度很窄、整块落在本栏正文左边界之外。第三条用「含中文或长度 > 3 的块」的最小左边界当基准，正文里的数字不会被误伤。
+
+**根因 2：词性缩写被认坏**
+
+除了 `n1.`（点被认成 1），还有 `1.`（整个 n 丢了，只剩那个点）、`Ⅱ1.`（n. 被认成罗马数字加 1）。都在词条开头，一律还原成 `n.`——**词条的第一个词性缩写几乎总是 n**，而且只处理词条第一行，风险可控（`clean_leading_noise`）。
+
+**根因 3：释义尾部粘数字**
+
+`n. 洗涤剂 10`、`v. 凝视；沉思；考虑 20`。和 7.3 的「note 尾部粘页码」同源，上一轮只清了 note，meaning 里的漏了 14 处。`parse_entry` 收尾统一截掉。
+
+**顺带放宽的四处正则**
+
+| 位置 | 放宽了什么 | 例子 |
+|---|---|---|
+| `POS_PREFIX_RE` | 加 `ord`、全角 `】`、`(=xxx)` 后可选句点、结尾允许一个大写字母 | `ord.第一adv.最初`、`n[英】男校长`、`adj.X级` |
+| `strip_leading_phonetic` | 开头斜杠被完全吃掉时，按「重音符号 + 词性表」剥 | `'əuvasi:zadj.海外的` |
+| `parse_entry` | 加「整行中文、无词性前缀」的释义兜底 | `策略，战术`、`[尤美]公寓套房` |
+| `(=xxx)` 剥离 | 允许跟一个句点 | `(=counselor).顾问` |
+
+**一个意外收获：粘连自动分离**
+
+本没打算动「释义续行拼接」那段逻辑（`if field in ("collocation","derived","meaning") and not SENT_END_RE.search(line)`）。实测发现它判的是**当前行**是否以句末标点结尾——书里的文化说明段一律以 `。` 收尾，所以会自动落进 `note` 而不是被拼进 `meaning`。于是 `chronology` / `hygiene` / `atlas` / `vegetarian` / `sandwich` / `devastate` / `costume` 的释义和词源自动分了家，不用另写切分规则。
+
+**应用链**（词表已经产出，不能重跑整条流水线）
+
+1. `python scripts/build_vocab.py` 重跑 → `data/words.raw.json`
+2. 新旧产物逐词对比 → `data/parse-changes.json`（260 条 `{chapterNo, headword, field, old, new}`）
+3. `python scripts/apply_parse_changes.py --write` → `data/words.clean.json`
+4. `python scripts/fix_spacing.py --apply`（**必须紧接着跑**，理由见下面第 1 个坑）
+5. `npx tsx scripts/update_parse_db.ts --write` → 数据库
+
+**结果**：154 个词 / 260 处字段（meaning 100、note 98、examples 28、derived 19、collocation 11、etymology 4）。**headword 零变化**，词目数 3594 不变。体检：meaning 尾部粘数字 0、meaning 开头是认坏词性 0、note 无汉字 0。
+
+**三个坑（都踩了）**
+
+1. **`fix_spacing.py` 不是幂等的**。原先以为它可重跑（7.8 的落库是整串原位替换，看着无害）——**实则不然**。它每次都会重新评估「仍有粘连嫌疑」的文本，对上次切剩的残留再切一刀。这次重跑本意只是把解析层退回未修状态的 62 个字段重新补空格，它却顺带切了 8 个**没退回**的字段，且全切错：
+
+   ```
+   exist      'doesn\'t existo n the surface'  →  'doesn\'t ex is to n the surface'
+   byproduct  'bypath n.旁道,小路'              →  'by path n.旁道,小路'
+   coin       'coiner n.创造新词语的人'         →  'coin er n.创造新词语的人'
+   ```
+
+   靠 `parse-changes.json` 的清单过滤掉了：凡是 (词条, 字段) 不在「应改集合」里的改动，一律回滚到 spacing 之前的值（一次性脚本 `rollback_overreach.py`）。**以后谁要单独重跑 `fix_spacing.py`，先看清这批残留。**
+
+2. **DB 同步必须从 `clean.json` 读最终值，不能从 `parse-changes.json` 读 `new`**。`parse-changes` 记的是 raw 状态（`betrayasecret`），而 `clean.json` 已经跑过 spacing（`betray a secret`）。第一版直接从 `new` 写库，把库里已经修好的例句、搭配又退回粘连——干跑时靠 `betray.collocation` 抽查发现。改成一律以 `clean.json` 为准，`parse-changes` 只用来确定「动哪些词条、哪些字段」。
+
+3. **Prisma 6.19 嵌套 `select` 里带 `orderBy` 会让查询引擎 panic**（`no entry found for key`，`record.rs:69`，非可恢复）。`word.findMany({ select: { ..., examples: { orderBy: ... } } })` 直接崩。拆成两次查询（`word` 一次、`wordExample` 一次，再按 `wordId` 归并）就没事。
+
+**落库**：`update_parse_db.ts` 原地更新，不重灌。`examples` 只增不改结构（本次 10 个词从无到有、18 个改文本，没有变少的），所以不删行。**进度 3 行 / 流水 4 行一行没动**（写前写后各查一次计数）。
+
+**幂等性**：`apply_parse_changes.py` 对 meaning / note 严格比对 `old`（note 忽略尾部数字，因为 `fix_notes` 已经清过那一截）；对四个 spacing 字段不比对、照写 `new`。`update_parse_db.ts` 一律以 `clean.json` 为准比库值。两者重跑都报 0 改动。
+
+**用法**：`python scripts/apply_parse_changes.py`（干跑）/ `--write`；随后 `python scripts/fix_spacing.py --apply`；再 `npx tsx scripts/update_parse_db.ts`（干跑）/ `--write`。
+
+---
+
+## 8. 测试策略
+
+**计划与实际有落差，如实记录。**
+
+| 层 | 测什么 | 计划怎么测 | 实际状态 |
+|---|---|---|---|
+| `lib/srs.ts` | FSRS 封装的正确性 | 单元测试：给定初始卡片 + 评分序列，断言 `dueAt` 递进 | ❌ **没写**。阶段二用浏览器 + 直接查库替代（见下） |
+| `lib/session.ts` | 队列构成逻辑 | 单元测试：断言「复习词优先」「新词配额」「上限截断」 | ❌ **没写**，同上 |
+| 提取脚本 | 解析规则 | 固定页面样本做 fixture | ✅ 用全书 334 页跑通，产出对得上索引 |
+| 数据质量 | `words.clean.json` | 校验脚本 | ✅ `check_with_ecdict.py` + `reconcile_index.py` |
+| UI | 学习流程 | **手动，无自动化** | ✅ 已在浏览器实测 |
+
+### 阶段二实际做了什么验证
+
+**没有写自动化测试**——这个阶段的目标是「跑通主链路」，加测试框架会把范围撑大。替代手段是**端到端实测 + 直接查数据库**：
+
+| 验的什么 | 怎么验 | 结果 |
+|---|---|---|
+| 评分落库正确 | 评「一般」后 `sqlite3` 查 `UserWordProgress` | `state=learning, reps=1, learningSteps=1, due=+10min` ✅ |
+| 「简单」拉长间隔 | 复习态评「简单」，看 `scheduledDays` | 3 天 → 10 天 ✅ |
+| 会话内重入队 | 评「一般」后看剩余数 | 剩余数不变（该词排回队尾）✅ |
+| 设置生效 | 设置页改 25 → 查库 | DB 确认 25，已还原为 20 ✅ |
+| 类型无错 | `npx tsc --noEmit` | 退出码 0 ✅ |
+| 生产构建 | `npx next build` | 通过 ✅ |
+
+**这笔技术债要在阶段三之前还掉**：`lib/srs.ts` 是纯函数（输入卡片 + 评分 → 输出新卡片），最好测；一旦 FSRS 参数调错，症状是「复习量不知不觉变得不合理」，不写测试很难发现。阶段三开工第一件事是补 `srs.ts` 和 `session.ts` 的单元测试。
+
+---
+
+## 9. 未决技术问题
+
+| # | 问题 | 阻塞什么 | 何时解决 | 状态 |
+|---|---|---|---|---|
+| 1 | 书的单元结构 | 数据模型定稿、解析规则 | 阶段一步骤 0 | ✅ **已解决**：22 个主题 Chapter，无大板块 |
+| 2 | 每页多少词、全书总词量 | 提取工作量评估 | 阶段一步骤 2 后 | ✅ **已解决**：334 页共 3594 条词，平均每页约 11 条 |
+| 3 | ECDICT 真实字段名 | `check_with_ecdict.py` | 下载后立即 | ✅ **已解决**：StarDict 格式，字段见 7.4；只有一份音标，已合并 `phonetic` |
+| 4 | ECDICT License | 能否分享 | 分享前 | ⬜ 未开始（自己用不受影响） |
+| 5 | OCR 识别出的英文长句有多少要人工校对 | 例句质量的验收标准 | 阶段一步骤 3 后 | ⚠️ **质量参差**：音标完全不可靠 → 一律用 ECDICT；例句/搭配/词源已进 MVP（背面全展开）。2026-10-15 量化：例句 486/3635（13.4%）有单词粘连，搭配 3.3%、词源 1.6%。**同日已用 `fix_spacing.py` 修复，见 7.8** |
+| 6 | 词表里残余的坏词有多少 | 灌库前的数据可信度 | 阶段一收尾 | ✅ **已收敛**：99.6% 通过词典校验，剩 14 条待人工核对，灌库时按 `verified == false` 过滤 |
+| 7 | SQLite 文件放哪、是否纳入版本管理 | 部署方式 | 阶段二 | ✅ **已解决**：`prisma/dev.db`，**已 gitignore**。数据库是可再生产物（重跑 seed 就有），不该进版本库 |
+| 8 | 是否需要 `git init` | 版本管理 | 阶段二开始前 | ✅ **已解决**：已 `git init`，但按约定不自动 commit |
+
+---
+
+## 10. 怎么跑起来
+
+**首次（或数据库重置后）**
+
+```bash
+npm install
+npx prisma migrate dev     # 建表
+npm run db:seed            # 灌数据：22 单元 / 3580 词
+npm run dev                # http://localhost:3000
+```
+
+**日常**：只要 `npm run dev`。数据库是本地文件 `prisma/dev.db`，关掉重开进度还在。
+
+**⚠️ 一个坑：`next build` 和 `next dev` 不能同时跑。**
+
+两者共用 `.next/` 目录。跑完 `next build` 再回到 dev server，会出现满屏的：
+
+```
+Error: Cannot find module './897.js'
+Require stack: ... .next/server/webpack-runtime.js
+```
+
+**这不是代码问题，是构建缓存串了。** 处理办法：**停掉 dev server 再重新起**（`Ctrl-C` 然后 `npm run dev`），不用删 `.next`。实测重启即可恢复。
+
+真要跑生产构建检查，请**先停 dev server**，跑完 `npx next build` 后重新 `npm run dev` 时也会自动重建。
+
+**改 FSRS 参数前先看 5.4**——那几个值直接影响「每天要复习多少词」，改完要连背几天才看得出影响，别凭手感当场调。

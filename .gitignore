@@ -1,0 +1,49 @@
+# ---- 依赖 ----
+node_modules/
+.pnp
+.pnp.js
+
+# ---- 构建产物 ----
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+
+# ---- 环境变量 ----
+.env
+.env*.local
+
+# ---- 提取流水线的中间产物（体积大，可重新生成）----
+data/pages/
+data/ocr/
+ecdict/
+
+# ---- 词表的本地备份快照（只是副本，没有脚本读它）----
+data/words.clean.backup.json
+
+# ---- 原始资料：书本身，绝不入库 ----
+*.pdf
+*.docx
+
+# ---- Python ----
+.venv/
+__pycache__/
+*.py[cod]
+
+# ---- 数据库 ----
+prisma/*.db*
+prisma/migrations/**/*.db
+
+# ---- 杂项 ----
+.DS_Store
+Thumbs.db
+*.log
+*.tsbuildinfo
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---- 本机设置与临时产物 ----
+.claude/settings.local.json
+data/_t.json

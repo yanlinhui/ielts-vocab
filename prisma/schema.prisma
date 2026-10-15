@@ -1,0 +1,137 @@
+// 雅思词汇真经 · 背单词工具 —— 数据模型
+//
+// **核心设计：把「单词本身」和「你的学习进度」分开存。**
+//
+//   Word              共享、不变。abandon 的释义对谁都一样
+//   UserWordProgress  每个用户 × 每个单词 一行
+//
+// 这样拆分后，以后加用户只需给他建一套 progress，词库直接共用——
+// 这就是「架构预留多用户」的具体含义，不用等那天再重构。
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// 书的单元划分 = 一个主题 Chapter。结构已确认：22 个主题，无大板块
+model Unit {
+  id        Int     @id @default(autoincrement())
+  chapterNo Int     @unique // 1..22
+  name      String // 如 "自然地理"
+  startPage Int? // 书页码，便于和原书对照
+  words     Word[]
+}
+
+/// 单词本身。与用户无关，所有用户共享
+model Word {
+  id          Int     @id @default(autoincrement())
+  headword    String // 单词原形
+  phonetic    String? // 音标。来自 ECDICT，不用 OCR 结果（OCR 的音标完全不可靠）
+  pos         String? // 词性，如 "n." / "v./n."，取自书中释义行的前缀
+  meaningCn   String // 中文释义（来自 ECDICT，权威且无版权问题）
+  tags        String? // 考试标签，如 "ielts cet6"（ECDICT 的 tag）
+  bncRank     Int? // BNC 词频排名
+  frqRank     Int? // 当代语料库词频排名
+
+  unitId      Int
+  unit        Unit    @relation(fields: [unitId], references: [id])
+  orderInUnit Int // 单元内顺序，保留书的编排
+  page        Int? // 书页码
+
+  // ---- 以下为「书中原创内容」，受版权保护 ----
+  // 公开分享时应整体关闭（置空或不上线），基础词条不受影响
+  bookMeaning String? // 书中原话的释义行
+  collocation String? // [搭] 搭配
+  derived     String? // [记] 派生
+  etymology   String? // 词根词源
+  cultureNote String? // 无标签的中文文化背景段落
+
+  examples WordExample[]
+
+  progress UserWordProgress[]
+  logs     ReviewLog[]
+
+  @@unique([unitId, orderInUnit])
+  @@index([headword])
+}
+
+/// 书中的例句。同样属于书籍原创内容
+model WordExample {
+  id         Int     @id @default(autoincrement())
+  wordId     Int
+  word       Word    @relation(fields: [wordId], references: [id], onDelete: Cascade)
+  en         String // 英文例句
+  cn         String? // 中文翻译
+  orderIndex Int     @default(0)
+
+  @@index([wordId])
+}
+
+model User {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
+  createdAt DateTime  @default(now())
+  progress  UserWordProgress[]
+  logs      ReviewLog[]
+  settings  UserSettings?
+}
+
+/// ★ 核心表：每个用户 × 每个单词 一行
+model UserWordProgress {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  wordId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word   Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  // ---- FSRS 状态，直接映射 ts-fsrs 的 Card ----
+  // SQLite 没有 enum，state 用字符串 + 应用层校验（见 lib/srs.ts）
+  //
+  // scheduled_days / learningSteps 也必须存：前者是「当前这次排到的间隔」，
+  // 后者是「处在第几个学习步长」。不存的话每次复习都从 0 算起，
+  // 学习步长会反复回到第一步，调度就错了。
+  stability     Float    @default(0)
+  difficulty    Float    @default(0)
+  dueAt         DateTime @default(now()) // 下次到期时间
+  state         String   @default("new") // new | learning | review | relearning
+  scheduledDays Int      @default(0)
+  learningSteps Int      @default(0)
+  reps          Int      @default(0)
+  lapses        Int      @default(0)
+  lastReviewAt  DateTime?
+  // 首次作答时间。「今天新学了多少词」靠它算——一条进度行就是在这天被
+  // 首次创建的，比从流水里反推简单也不会算错。
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, wordId])
+  @@index([userId, dueAt]) // ★ 取到期队列的主查询
+  @@index([userId, createdAt]) // 今日新学计数
+}
+
+/// 每次作答流水。用于统计，不可变
+model ReviewLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  wordId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word       Word     @relation(fields: [wordId], references: [id], onDelete: Cascade)
+  rating     Int // 1=忘了 2=困难 3=一般 4=简单
+  reviewedAt DateTime @default(now())
+  elapsedMs  Int? // 停留时长，用于分析
+
+  @@index([userId, reviewedAt])
+  @@index([wordId])
+}
+
+model UserSettings {
+  userId           Int     @id
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dailyNewLimit    Int     @default(20)
+  dailyReviewLimit Int     @default(200)
+  accent           String  @default("uk") // uk | us
+  autoSpeak        Boolean @default(false)
+}
