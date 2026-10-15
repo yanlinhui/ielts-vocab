@@ -47,7 +47,7 @@ export default function SettingsForm({ initial }: { initial: SettingsValues }) {
 
   return (
     <form
-      className="flex flex-col gap-5 rounded-2xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5"
+      className="flex flex-col gap-5 rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-6"
       onSubmit={(e) => {
         e.preventDefault();
         void save();
@@ -80,7 +80,7 @@ export default function SettingsForm({ initial }: { initial: SettingsValues }) {
           onChange={(e) =>
             setValues((s) => ({ ...s, accent: e.target.value as Accent }))
           }
-          className="rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+          className="rounded-[var(--radius-control)] border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm"
         >
           <option value="uk">英式</option>
           <option value="us">美式</option>
@@ -92,7 +92,7 @@ export default function SettingsForm({ initial }: { initial: SettingsValues }) {
           type="checkbox"
           checked={values.autoSpeak}
           onChange={(e) => setValues((s) => ({ ...s, autoSpeak: e.target.checked }))}
-          className="mt-0.5"
+          className="mt-0.5 accent-[var(--color-brand)]"
         />
         <span>
           <span className="text-sm">翻面时自动朗读</span>
@@ -106,12 +106,12 @@ export default function SettingsForm({ initial }: { initial: SettingsValues }) {
         <button
           type="submit"
           disabled={!dirty || state === "saving"}
-          className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm text-white transition hover:opacity-90 disabled:opacity-40"
+          className="rounded-[var(--radius-control)] bg-[var(--color-brand)] px-4 py-2.5 text-sm font-medium text-[var(--color-canvas)] transition hover:opacity-90 disabled:opacity-40"
         >
           {state === "saving" ? "保存中…" : "保存"}
         </button>
         {state === "saved" && (
-          <span className="text-sm text-[var(--color-rate-easy)]">已保存</span>
+          <span className="text-sm text-[var(--color-brand)]">已保存</span>
         )}
         {state === "error" && (
           <span className="text-sm text-[var(--color-rate-again)]">{error}</span>
@@ -161,7 +161,7 @@ function NumberInput({
         // 输入框清空时 Number("") 是 0，别让它把值写成 0
         if (Number.isFinite(n) && e.target.value !== "") onChange(n);
       }}
-      className="w-28 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm tabular-nums"
+      className="w-28 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm tabular-nums"
     />
   );
 }

@@ -34,7 +34,7 @@ export default function SpeakButton({
         e.stopPropagation(); // 别让点击冒泡到卡片触发翻面
         speak(text, { accent });
       }}
-      className={`${dim} inline-flex shrink-0 items-center justify-center rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-brand)] transition hover:border-[var(--color-brand)] hover:bg-[color-mix(in_srgb,var(--color-brand)_8%,white)] disabled:cursor-not-allowed disabled:text-[var(--color-muted)] disabled:opacity-50`}
+      className={`${dim} inline-flex shrink-0 items-center justify-center rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-brand)] transition hover:border-[var(--color-brand)] hover:bg-[color-mix(in_srgb,var(--color-brand)_8%,var(--color-surface))] disabled:cursor-not-allowed disabled:text-[var(--color-muted)] disabled:opacity-50`}
     >
       <svg
         viewBox="0 0 24 24"

@@ -90,7 +90,14 @@ export default function WordCard({
     apply();
     // 转屏、拉窗口都会让同一面重新折行，高度跟着变
     window.addEventListener("resize", apply);
-    return () => window.removeEventListener("resize", apply);
+    // 衬线字体是异步加载的：字体到位前后文字的折行和行高都会变，而外框高度
+    // 早就冻结成 fallback 字体量出来的值了——差一点就是背面被裁一截、或者
+    // 底部空一截。字体每次加载完都重量一次。这是纯加法，锁高算法本身没动。
+    document.fonts?.addEventListener("loadingdone", apply);
+    return () => {
+      window.removeEventListener("resize", apply);
+      document.fonts?.removeEventListener("loadingdone", apply);
+    };
   }, [flipped]);
 
   // 开了「翻面自动朗读」的话，翻到背面时读一次。
@@ -143,9 +150,14 @@ export default function WordCard({
             tabIndex={0}
             aria-label={`${item.headword}，点击查看释义`}
             onClick={() => setFlipped(true)}
-            className="flip-face col-start-1 row-start-1 flex min-h-[20rem] cursor-pointer flex-col items-center justify-center gap-5 self-start rounded-2xl border border-[var(--color-line)] bg-[var(--color-surface)] p-8 shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]"
+            className="flip-face col-start-1 row-start-1 flex min-h-[20rem] min-w-0 cursor-pointer flex-col items-center justify-center gap-5 self-start rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-8"
           >
-            <span className="text-4xl font-semibold tracking-tight sm:text-5xl">
+            {/* 衬线的 x-height 比无衬线小，同样字号看着会小一圈，所以比原来
+                提了一档（4xl/5xl → 5xl/6xl）补回来。
+                break-words + min-w-0：像 internationalization 这种长词在窄屏上
+                折不动，会把整张卡撑宽出视口，再被 .flip-scene 的 overflow:hidden
+                切掉一截——允许断行就不会。 */}
+            <span className="max-w-full break-words text-center font-serif text-5xl font-semibold tracking-tight sm:text-6xl">
               {item.headword}
             </span>
             <SpeakButton text={item.headword} accent={accent} size="lg" />
@@ -157,13 +169,13 @@ export default function WordCard({
               它只裁这一面自己的框，不参与上面那个锁高。 */}
           <div
             ref={backRef}
-            className="flip-face flip-face-back col-start-1 row-start-1 flex min-h-[20rem] flex-col self-start overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-surface)] shadow-sm"
+            className="flip-face flip-face-back col-start-1 row-start-1 flex min-h-[20rem] min-w-0 flex-col self-start overflow-hidden rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)]"
           >
             {/* 头部：单词 + 音标 + 出处 */}
             <div className="shrink-0 border-b border-[var(--color-line)] px-6 py-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <h2 className="text-3xl font-semibold tracking-tight">
+                  <h2 className="font-serif text-3xl font-semibold tracking-tight">
                     {item.headword}
                   </h2>
                   {item.phonetic && (
@@ -177,7 +189,7 @@ export default function WordCard({
 
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-muted)]">
                 {item.pos && (
-                  <span className="rounded bg-[var(--color-canvas)] px-1.5 py-0.5">
+                  <span className="rounded-[var(--radius-chip)] bg-[var(--color-surface-2)] px-1.5 py-0.5">
                     {item.pos}
                   </span>
                 )}
@@ -185,7 +197,7 @@ export default function WordCard({
                   Chapter {item.unitNo} · {item.unitName}
                 </span>
                 {item.isNew && (
-                  <span className="rounded bg-[color-mix(in_srgb,var(--color-brand)_12%,white)] px-1.5 py-0.5 text-[var(--color-brand)]">
+                  <span className="rounded-[var(--radius-chip)] bg-[color-mix(in_srgb,var(--color-brand)_12%,var(--color-surface))] px-1.5 py-0.5 text-[var(--color-brand)]">
                     新词
                   </span>
                 )}
@@ -215,7 +227,7 @@ export default function WordCard({
                         {item.examples.map((ex, i) => (
                           <li
                             key={i}
-                            className="rounded-lg bg-[var(--color-canvas)] px-[0.8em] py-[0.7em]"
+                            className="rounded-[var(--radius-control)] bg-[var(--color-surface-2)] px-[0.8em] py-[0.7em]"
                           >
                             <div className="flex items-start gap-[0.5em]">
                               <p className="flex-1 text-[0.88em] leading-[1.55]">{ex.en}</p>
@@ -280,8 +292,8 @@ export default function WordCard({
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-[0.5em]">
-      <h3 className="flex items-center gap-[0.5em] text-[0.7em] font-semibold text-[var(--color-muted)]">
-        <span className="h-[1.1em] w-[2px] rounded-full bg-[var(--color-brand)]" />
+      <h3 className="flex items-center gap-[0.5em] text-[0.7em] font-semibold tracking-[0.2em] text-[var(--color-muted)]">
+        <span className="h-[1.1em] w-px bg-[var(--color-brand)]" />
         {title}
       </h3>
       {children}
@@ -292,7 +304,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 /** 灰色底的信息块，给搭配/词源这类整段文字用。 */
 function Note({ children }: { children: ReactNode }) {
   return (
-    <p className="whitespace-pre-line rounded-lg bg-[var(--color-canvas)] px-[0.8em] py-[0.7em] text-[0.88em] leading-[1.6]">
+    <p className="whitespace-pre-line rounded-[var(--radius-control)] bg-[var(--color-surface-2)] px-[0.8em] py-[0.7em] text-[0.88em] leading-[1.6]">
       {children}
     </p>
   );

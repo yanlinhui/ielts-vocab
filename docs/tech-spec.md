@@ -54,6 +54,7 @@ Python 提取脚本只产出 `words.clean.json` 这一个文件。前端**完全
 | ORM | Prisma | **6.19.3**（client 与 CLI 同版本） | 用代码操作数据库。**换 Postgres 只改 datasource 一行** |
 | 复习算法 | ts-fsrs | 5.4.2 | FSRS 官方 JS 实现，纯本地 |
 | 发音 | Web Speech API | — | 浏览器内置，零成本 |
+| 字体 | Noto Serif SC（`next/font/google`） | — | 构建时拉到 `.next` 自托管，运行时零网络。**只用于标题**，正文保持系统无衬线。选型见 11.2 |
 | 图表（阶段三） | Recharts | — | React 生态主流 |
 | 抠图脚本 | Python | 3.13 | **零第三方依赖**（手写 PDF 对象解析） |
 | OCR | rapidocr + onnxruntime | 3.10 / 1.31 | 本地 CPU 推理，模型随包自带、**不联网**；见 7.2 |
@@ -126,10 +127,11 @@ IELTS Learning Tools/
 │   └── seed.ts                        # 读 words.clean.json 灌库
 ├── src/
 │   ├── app/
-│   │   ├── layout.tsx                 # 全局布局 + 导航
-│   │   ├── globals.css                # Tailwind 入口 + 配色变量
+│   │   ├── layout.tsx                 # 全局布局 + 字体导入 + 页头
+│   │   ├── icon.svg                   # favicon（Next 约定文件名）
+│   │   ├── globals.css                # Tailwind 入口 + 设计令牌 + .flip-*，见第 11 节
 │   │   ├── page.tsx                   # 首页：今日进度 + 开始按钮
-│   │   ├── units/page.tsx             # 单元列表（含各单元进度）
+│   │   ├── units/page.tsx             # 单元列表（排成书末目录的样子）
 │   │   ├── study/page.tsx             # 学习/复习（核心）
 │   │   ├── stats/page.tsx             # 统计（阶段三）
 │   │   ├── settings/page.tsx          # 设置
@@ -137,6 +139,7 @@ IELTS Learning Tools/
 │   │       ├── review/route.ts        # POST 评分
 │   │       └── settings/route.ts      # POST 保存设置
 │   ├── components/
+│   │   ├── Nav.tsx                    # 页头导航（client，靠 usePathname 标出当前页）
 │   │   ├── WordCard.tsx               # 翻面卡片（正面单词 / 背面全展开，见 5.5）
 │   │   ├── StudySession.tsx           # 会话状态机（队列 + 评分 + 重入队）
 │   │   ├── RatingButtons.tsx          # 四档按钮 + 各自的下次间隔
@@ -944,3 +947,136 @@ Require stack: ... .next/server/webpack-runtime.js
 真要跑生产构建检查，请**先停 dev server**，跑完 `npx next build` 后重新 `npm run dev` 时也会自动重建。
 
 **改 FSRS 参数前先看 5.4**——那几个值直接影响「每天要复习多少词」，改完要连背几天才看得出影响，别凭手感当场调。
+
+---
+
+## 11. 视觉设计系统（2026-10-16）
+
+改版方向定名**「典藏书卷」**：暖纸底、墨色正文、衬线标题、克制的墨绿强调色。目标是让界面看起来像一本装帧讲究的书，而不是通用 SaaS 面板。全站只做浅色，不做深色模式。
+
+### 11.1 令牌层（`globals.css`）
+
+改版前 `@theme` 里只有 10 个颜色变量，**没有字体、圆角、间距令牌**——这是所有视觉不一致的根源（同为「卡片」，首页主卡写 `rounded-2xl`、统计格写 `rounded-xl`）。现在补齐了了字体和圆角两类令牌。
+
+**色板**（真值只在 `globals.css` 一处，组件一律走 `border-[var(--color-line)]` 这种任意值写法，换皮不改类名）：
+
+| 令牌 | 值 | 角色 |
+|---|---|---|
+| `--color-canvas` | `#efe9dc` | 页面底：宣纸暖米白 |
+| `--color-surface` | `#fbf8f1` | 卡片纸面，比页面底亮一档 |
+| `--color-surface-2` | `#f4eee1` | 卡内嵌块（例句 / 搭配 / 词源），介于两者之间 |
+| `--color-line` | `#dfd5c2` | 细线 |
+| `--color-ink` | `#1b1815` | 正文墨色 |
+| `--color-muted` | `#6e6353` | 次要文字 |
+| `--color-brand` | `#1f4a3d` | 深墨绿：主按钮、进度条、当前导航、focus |
+
+`--color-surface-2` 是新增的。此前卡内嵌块用的是 `--color-canvas`，等于和页面底色同一个值——卡片内部的块和卡片外的底一样深，看上去像卡片「漏」了。
+
+**四档评分色**换成低饱和版（红/橙/蓝/绿的位置不变，对应忘了/困难/一般/简单）：
+
+| 令牌 | 新值 | 旧值 |
+|---|---|---|
+| `--color-rate-again` | `#a33a2a` | `#ef4444` |
+| `--color-rate-hard` | `#a8761c` | `#f59e0b` |
+| `--color-rate-good` | `#2f5c86` | `#2563eb` |
+| `--color-rate-easy` | `#2e6b4c` | `#10b981` |
+
+旧的是 Tailwind 默认色，高饱和，放在暖纸底上会「跳」出来像贴上去的。
+
+> **评分色没有重复定义。** 一度以为 `src/lib/rating.ts` 里硬编码了一份色值，读下来它写的是 `color: "var(--color-rate-again)"`——引用变量，真值只在 `globals.css`。所以换色只改了 1 个文件。
+
+**圆角从 6 级收敛到 3 级**：`--radius-card: 6px`（卡片容器）、`--radius-control: 4px`（按钮、输入框、卡内嵌块）、`--radius-chip: 2px`（徽标、进度条）。`rounded-full` 只保留给 `SpeakButton` 的圆形图标按钮。
+
+**大圆角是「App 感」最重的来源，小圆角是「书卷感」最重的来源**——纸书上的框是方的。
+
+**全套去掉 `shadow-sm`**（原只在 `WordCard` 正反两面）。层次改由「底色差 + 一条细线」承担：纸书没有投影。
+
+### 11.2 字体
+
+`next/font/google` 引入 **Noto Serif SC 400 / 600**，暴露成 `--font-serif-sc`，再由 `@theme` 的 `--font-serif` 引用（加系统衬线兜底）。
+
+**为什么不另配一个拉丁衬线**：Noto Serif CJK 的拉丁部分本身就是 Source Serif 的字形，**一个家族同时覆盖英文 headword 和中文标题**，少一次下载、少一处不一致。
+
+**为什么是 `next/font/google` 而不是 `@fontsource`**（两条路都实测过）：
+
+- `fonts.googleapis.com` 和 `fonts.gstatic.com` **现在都通**（实测 CSS 接口 200，0.93s）。`plan.md` 3.4 里记的「网络被拦截」那条**已经过期**。
+- `@fontsource/noto-serif-sc` 解包后 **87 MB**，会塞进 `node_modules`；`next/font/google` 只把字体缓存进 `.next/static/media`（实测 **101 个 woff2，共 6.0 MB**）。
+- 运行时两边都是自托管、零网络，对「纯本地运行」没有影响。
+
+几个实测结论：
+
+- 这个家族在 Google 侧是**变量字体**：CSS 返回 202 个 `@font-face`，但只有 **101 个唯一文件**，两个字重共用同一份切片。所以「引两个字重」的下载量并不翻倍。
+- `subsets` 参数对这个家族**无效**：传 `latin` / `chinese-simplified` / 不传，返回的切片数都是 202。所以 `subsets: ["latin"]` 是个不影响的声明，中文覆盖不受损。
+- **必须 `preload: false`**：101 个分片全量 preload 等于让浏览器在首帧前并发拉 101 个文件。交给浏览器按 `unicode-range` 按需取片即可。
+- **实际首屏下载量**（浏览器只取命中的分片）：词库页是全站汉字最多的一页，实测取 **7 个分片共 437.6 KB**，全部来自 localhost 且带哈希可永久缓存。首页/学习页更少。这是一次性成本。
+
+**衬线只用于标题性位置**，正文一律保持系统无衬线：
+
+| 用衬线 `--font-serif` | 保持无衬线 |
+|---|---|
+| 页面 `h1`、卡片 headword、章节号、统计大数字 | 释义、例句、中文翻译、表单、按钮 |
+
+理由有两条，第二条更硬：① 宋体在 18px 屏幕上笔画偏细，**长时间阅读不如黑体**，而正文正是每天盯最久的地方；② **换字体就是换行高**——背面正文的 `leading-[1.6]/[1.55]` 和全 `em` 间距是在系统无衬线下校准的，中文正文换宋体必须重新校准全部行高，而「不动机制」是这次改版的硬约束。
+
+### 11.3 键盘焦点
+
+改版前**除学习卡正面外，所有交互元素都没有 focus 样式**——而 `PRD.md` 第 3 节承诺了「支持键盘 Tab 导航」，这是个真实的无障碍缺口。现在在 `globals.css` 有一条全局规则：
+
+```css
+:where(a, button, [role="button"], input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+```
+
+用 `:where()` 把选择器优先级压到 0，个别地方要覆盖不会被卡住；用 `outline` 而不是 `ring`，免得和已有的 `ring-*` 工具类打架。它是**无层级（unlayered）**的，因此优先于 Tailwind 的 `@layer utilities`——`outline-none` 压不过它。
+
+### 11.4 对比度实测
+
+在真实页面上用 WCAG 相对亮度公式逐个算的（不是估算）：
+
+| 组合 | 对卡片底 `#fbf8f1` | 对页面底 `#efe9dc` |
+|---|---|---|
+| 墨色 `#1b1815` | **16.66 : 1** | 14.61 : 1 |
+| 墨绿 `#1f4a3d` | **9.40 : 1** | 8.25 : 1 |
+| 次要文字 `#6e6353` | **5.54 : 1** | 4.86 : 1 |
+| 评分 · 一般 `#2f5c86` | 6.61 : 1 | 5.79 : 1 |
+| 评分 · 忘了 `#a33a2a` | 6.19 : 1 | 5.43 : 1 |
+| 评分 · 简单 `#2e6b4c` | 5.96 : 1 | 5.22 : 1 |
+| 评分 · 困难 `#a8761c` | **3.75 : 1** | 3.29 : 1 |
+
+正文全部过 4.5:1；四档评分色作为 3px 图形元素全部过 WCAG 1.4.11 要求的 3:1。最紧的是「困难」的赭橙 3.75——再浅一点就踩线了，调色时注意别往浅里走。
+
+卡片面与页面底的亮度比只有 **1.15 : 1**，单看偏弱，但配上 `--color-line` 的发丝边框后边界清楚（改版前 canvas `#f6f7f9` vs surface `#ffffff` 只有约 1.05:1，反而更糊）。
+
+### 11.5 改版对 `WordCard` 的影响（只动视觉）
+
+`5.5` 里那套锁高机制、`BASE_FONT`、`em` 体系**一行没动**。改版在 `WordCard.tsx` 上只做了这些：
+
+- 正反两面 `rounded-2xl → 6px`、删掉两处 `shadow-sm`、headword 加 `font-serif`
+- headword 字号提了一档（`text-4xl sm:text-5xl → text-5xl sm:text-6xl`）——**衬线的 x-height 比无衬线小，同字号看着会小一圈**，不提一档会显小
+- 卡内嵌块 `bg-canvas → bg-surface-2`、`rounded-lg → 4px`；`Section` 竖条 `2px → 1px`、标题加 `tracking-[0.2em]`
+- 三处 `color-mix(..., white)` 的混色基色由纯白改成 `var(--color-surface)`——**纯白混进暖纸底会发灰显脏**
+
+**新增两条，都是为了修换字体牵出来的问题：**
+
+1. **`document.fonts` 的 `loadingdone` 事件会重测一次锁高。** 衬线字体是异步加载的：字体到位前后文字的折行和行高都会变，而外框高度早已冻结成 fallback 字体量出来的值——差一点就是背面被裁一截、或者底部空一截。这是纯加法，锁高算法本身没动。
+2. **两面加 `min-w-0`，headword 加 `max-w-full break-words`。** 这是个**改版前就存在、被字号提档放大**的 bug：`internationalization` 这类长词折不动，会把整张卡撑宽出视口，再被 `.flip-scene` 的 `overflow: hidden` 切掉一截。桌面宽度下不触发（用户实际窗口够宽，所以一直没暴露），375px 下必现。加完之后卡片宽度恒定，长词折行留在卡内。
+
+**改版后重测的锁高**（视口 1280×800 与 375×812 各跑一遍，结论一致）：
+
+| 状态 | 外框高 | 正面高 | 背面高 | 背面被裁 | 页内滚动 | 横向溢出 |
+|---|---|---|---|---|---|---|
+| 未翻面 | 320 | 320 | 497 | — | 无 | 无 |
+| 已翻面 | 497 | 320 | 497 | **否** | 无 | 无 |
+| 翻回正面 | 320 | 320 | 497 | — | 无 | 无 |
+
+**正面仍恒为 320px**——衬线 headword 提了一档字号也没有把它撑过 `min-h-[20rem]`。变高时 `transitionDelay` 为 `0ms`、变矮时为 `calc(var(--flip-duration) / 2)`，与 5.5 记录的行为一致。
+
+> **再次撞上那个已知限制**：`height` 的收放动画过程仍然观察不到——预览面板隐藏时 CSS transition 被冻结（`style.height` 已是目标值，`computed` 停在起点）。**验的是静止后的布局和机制，不是动画过程。**
+
+### 11.6 明确没做
+
+- 深色模式
+- 改任何业务逻辑、数据模型、接口（`lib/srs.ts` / `lib/session.ts` / `lib/tts.ts` / `api/*` 未动）
+- 动 `globals.css` 的 `.flip-*` 区块

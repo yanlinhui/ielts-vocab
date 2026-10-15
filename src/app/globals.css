@@ -1,21 +1,41 @@
 @import "tailwindcss";
 
 /* Tailwind 4 用 CSS 变量做主题，不需要 tailwind.config.js。
-   这里只定义几个语义色，让卡片/按钮有统一的视觉语言。 */
-@theme {
-  --color-ink: #1a1a1a;
-  --color-muted: #6b7280;
-  --color-surface: #ffffff;
-  --color-canvas: #f6f7f9;
-  --color-line: #e5e7eb;
-  --color-brand: #2563eb;
+   这里定义两类东西：
+   1. 语义色 —— 组件里一律写 border-[var(--color-line)] 这种任意值，换皮只改这里
+   2. 字体与圆角令牌 —— 让「标题用衬线」「卡片圆角 6px」有统一出口，
+      不然每个文件各写一个 rounded-2xl/rounded-xl，视觉语言立刻散掉
 
-  /* 四档评分的语义色，和 Anki 的习惯一致：
-     忘了→红、困难→橙、一般→蓝、简单→绿 */
-  --color-rate-again: #ef4444;
-  --color-rate-hard: #f59e0b;
-  --color-rate-good: #2563eb;
-  --color-rate-easy: #10b981;
+   配色方向是「典藏书卷」：暖米白纸底 + 墨色正文 + 墨绿强调，
+   层次靠「底色差 + 一条细线」做，全程不用阴影（纸书没有投影）。 */
+@theme {
+  --color-canvas: #efe9dc; /* 页面底：宣纸暖米白 */
+  --color-surface: #fbf8f1; /* 卡片纸面，比页面底亮一档 */
+  --color-surface-2: #f4eee1; /* 卡片内部的嵌块（例句/搭配/词源），介于两者之间 */
+  --color-line: #dfd5c2; /* 细线 */
+  --color-ink: #1b1815; /* 正文墨色（暖调近黑） */
+  --color-muted: #6e6353; /* 次要文字（暖灰） */
+  --color-brand: #1f4a3d; /* 强调色：深墨绿 */
+
+  /* 四档评分的语义色，位置和 Anki 的习惯一致：
+     忘了→红、困难→橙、一般→蓝、简单→绿。
+     相比 Tailwind 默认那套高饱和色，这四色都往灰里压了一档——
+     高饱和色放在暖纸底上会「跳」出来，像贴上去的。 */
+  --color-rate-again: #a33a2a;
+  --color-rate-hard: #a8761c;
+  --color-rate-good: #2f5c86;
+  --color-rate-easy: #2e6b4c;
+
+  /* 衬线只用于标题性位置：页面 h1、卡片 headword、章节号、统计大数字。
+     正文（释义/例句/翻译/表单/按钮）保持系统无衬线——宋体在 18px 屏幕上
+     笔画偏细，一天盯几十张卡的前提下不如黑体耐读。
+     --font-serif-sc 由 next/font 注入（见 layout.tsx），后面是系统衬线兜底。 */
+  --font-serif: var(--font-serif-sc), "Songti SC", "SimSun", serif;
+
+  /* 圆角只有三档。大圆角是「App 感」最重的来源，小圆角是「书卷感」最重的来源。 */
+  --radius-card: 6px; /* 卡片容器 */
+  --radius-control: 4px; /* 按钮、输入框、卡内嵌块 */
+  --radius-chip: 2px; /* 徽标、进度条 */
 }
 
 html,
@@ -27,6 +47,15 @@ body {
   background: var(--color-canvas);
   color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
+}
+
+/* 全站统一的键盘焦点样式。此前除学习卡正面外没有任何交互元素有 focus 样式，
+   这是个真实的无障碍缺口（PRD 第 3 节承诺「支持键盘 Tab 导航」）。
+   用 :where() 把优先级压到 0，个别地方要覆盖不会被卡住；
+   用 outline 而不是 ring，免得和已有的 ring-* 工具类打架。 */
+:where(a, button, [role="button"], input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
 }
 
 /* 卡片翻面用的 3D 翻转。整个卡片绕 Y 轴转，正反两面各自

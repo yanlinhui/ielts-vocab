@@ -27,16 +27,16 @@ export default function RatingButtons({
           disabled={disabled}
           onClick={() => onRate(meta.value)}
           title={`${meta.hint}（键盘 ${meta.key}）`}
-          className="group flex flex-col items-center gap-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-3 transition hover:border-[var(--color-brand)] disabled:opacity-50"
+          className="group flex flex-col items-center gap-1 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-3 transition hover:border-[var(--color-brand)] disabled:opacity-50"
           style={{ borderTopWidth: 3, borderTopColor: meta.color }}
         >
           <span className="flex items-center gap-1.5 text-sm font-medium">
             {meta.label}
-            <kbd className="hidden rounded border border-[var(--color-line)] px-1 text-[10px] leading-4 text-[var(--color-muted)] sm:inline">
+            <kbd className="hidden rounded-[var(--radius-chip)] border border-[var(--color-line)] px-1 text-[10px] leading-4 text-[var(--color-muted)] sm:inline">
               {meta.key}
             </kbd>
           </span>
-          <span className="text-[11px] text-[var(--color-muted)]">
+          <span className="text-[11px] tracking-[0.08em] text-[var(--color-muted)]">
             {formatInterval(previews[meta.value])}
           </span>
         </button>
