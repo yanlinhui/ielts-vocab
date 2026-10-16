@@ -170,16 +170,36 @@ export default function StudySession({
         busy={busy}
       />
 
-      {/* 开关放在卡片外、放这一行：紧挨「先退出」这个边角动作，不占卡片正面
+      {/* 开关放在卡片外、放这一行：紧挨「退出」这个边角动作，不占卡片正面
           （PRD 1.3 一次只做一件事），也不用翻面就能切。 */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <AutoSpeakToggle on={autoSpeak} onToggle={toggleAutoSpeak} />
-        <Link
-          href="/"
-          className="text-xs text-[var(--color-muted)] underline-offset-2 hover:underline"
-        >
-          先退出（进度已实时保存）
-        </Link>
+        <div className="flex items-center gap-2.5">
+          {/* 「进度已实时保存」得留在明面上、不能只塞进 title：它回答的是
+              「我这一走进度会不会丢」——手机上悬停不出 tooltip，恰恰是手机用户
+              最需要这句话。 */}
+          <span className="text-xs text-[var(--color-muted)]">进度已实时保存</span>
+          <Link
+            href="/"
+            className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-[var(--radius-chip)] border border-[var(--color-line)] px-2.5 py-1.5 text-xs text-[var(--color-muted)] transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <path d="M16 17l5-5-5-5" />
+              <path d="M21 12H9" />
+            </svg>
+            退出
+          </Link>
+        </div>
       </div>
     </div>
   );
