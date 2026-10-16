@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 
@@ -130,12 +131,38 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
       : "/"
     : pathname;
 
+  // 点击后**立刻**把高亮挪到目标项，不等新页面数据回来。
+  //
+  // 为什么需要：`current` 跟着 `usePathname()` 走，而 pathname 是等新页面整棵子树
+  // commit 之后才变的。五个页面全是 `force-dynamic`，所以这中间隔着一次完整的服务端
+  // 往返——本地 dev 热态实测高亮要等 65~185ms 才动，服务端正在编译路由（改完文件
+  // 第一次访问）时到 1~2 秒。这段时间高亮还停在旧项上；loading 骨架也要等服务端把
+  // 第一段流回来才出现（实测再晚 60~90ms），所以点击后有个上百毫秒的窗口**画面完全
+  // 不动**，观感就是「点了没反应」。用本地的 `pending` 先接管，pathname 一变就交还。
+  //
+  // ⚠️ 这不是 dev 特有的：dev 只是把服务端往返拖长了，正式构建下同样存在这一段，
+  // 只是短到几乎看不见。所以这条改动在哪个模式下都成立。
+  //
+  // 换 unit 参数也算「变了」：从 `/study?unit=3` 到 `/study?unit=7` 走的是同一段
+  // 路径，只盯 pathname 的话 pending 永远清不掉。
+  //
+  // ⚠️ `pending` 只用来**上色**，不用来写 `aria-current`（见下面 active / lit 两行）。
+  // 页面其实还没到，就把新项标成「当前页」，读屏软件会提前念错。
+  const [pending, setPending] = useState<string | null>(null);
+  useEffect(() => setPending(null), [pathname, unitParam]);
+
   return (
     <nav className={rail ? "flex flex-col" : "flex items-center gap-0.5"}>
       {NAV.map((item) => {
         // 根路径要全等，否则任何页面都会命中 "/"
         const active =
           item.href === "/" ? current === "/" : current.startsWith(item.href);
+
+        // 上色用的值：正在路上时**只亮目标那一项**，落地后再交还给真实的当前页。
+        // 不能写成 `active || item.href === pending`——从点击到 pathname 追上来的这
+        // 60~110ms 里，新旧两项会同时亮着。`pending` 里存的只会是 NAV 那四个 href，
+        // 所以这里直接比字符串就够。
+        const lit = pending ? item.href === pending : active;
 
         // 当前页两套排布都用**朱砂**标出来，但画法不同，因为两个面的高度差很多：
         // - rail：整块朱砂覆盖（选中实色、划过半透明），文字提到 rail-ink
@@ -154,12 +181,12 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
         // 那个也保留不动，收到 2px 的只有上面 `<nav>` 的项间间隙。
         const cls = rail
           ? `flex items-center gap-2.5 rounded-[var(--radius-control)] border-b border-b-[var(--color-line)] px-3 py-2.5 text-sm transition last:border-b-0 ${
-              active
+              lit
                 ? "bg-[var(--color-rail-seal)] font-medium text-[var(--color-ink)]"
                 : "text-[var(--color-muted)] hover:bg-[var(--color-rail-seal-soft)] hover:text-[var(--color-ink)]"
             }`
           : `flex items-center border-b-2 px-1.5 py-1.5 text-sm transition ${
-              active
+              lit
                 ? "border-b-[var(--color-seal)] font-medium text-[var(--color-ink)]"
                 : "border-b-transparent text-[var(--color-muted)] hover:text-[var(--color-ink)]"
             }`;
@@ -168,6 +195,7 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
           <Link
             key={item.href}
             href={item.href}
+            onClick={() => setPending(item.href)}
             aria-current={active ? "page" : undefined}
             className={cls}
           >
