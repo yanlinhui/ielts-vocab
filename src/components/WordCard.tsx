@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import RatingButtons from "./RatingButtons";
 import SpeakButton from "./SpeakButton";
+import FrequencyRuler from "./FrequencyRuler";
 import { speak, type Accent } from "@/lib/tts";
 import type { QueueItem } from "@/lib/session";
 import type { Rating } from "@/lib/rating";
@@ -201,7 +202,26 @@ export default function WordCard({
                     新词
                   </span>
                 )}
+                {/* 描边式，和上面「新词」的填充式刻意区分开——两者性质不同：
+                    新词是「此刻刚学的」（朱砂那侧的分工），雅思标签是词条自带的
+                    固有属性，归墨绿那侧的结构色。 */}
+                {item.isIelts && (
+                  <span className="rounded-[var(--radius-chip)] border border-[var(--color-brand)] px-1.5 py-0.5 text-[var(--color-brand)]">
+                    雅思
+                  </span>
+                )}
               </div>
+
+              {/* 常用度。放在头部而不是正文末尾：它是「值不值得花力气」的决策依据，
+                  不是要读的内容，得在评分之前就看得见。没有词频数据的词整行不渲染，
+                  不留占位符（PRD 2.2 边界情况那条）。
+                  这里是静态文本 + 定尺寸方块，offsetHeight 挂载时就定死，
+                  不影响下面那段锁高逻辑。 */}
+              {item.bncRank !== null && (
+                <div className="mt-2">
+                  <FrequencyRuler rank={item.bncRank} />
+                </div>
+              )}
             </div>
 
             {/* 主体：不滚、不裁——装不下就整页滚（那是外层的事）。

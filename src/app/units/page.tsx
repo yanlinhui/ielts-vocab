@@ -31,7 +31,7 @@ export default async function UnitsPage() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <h1 className="font-serif text-3xl font-semibold tracking-tight">词库</h1>
+        <h1 className="font-serif text-3xl font-semibold tracking-tight">章节词汇</h1>
         <p className="mt-2 text-sm text-[var(--color-muted)]">
           按书的章节划分，共 {units.length} 章、{units.reduce((n, u) => n + u._count.words, 0)} 个词。
           点某一章可以只练那一章。

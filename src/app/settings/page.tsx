@@ -23,7 +23,7 @@ export default async function SettingsPage() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <h1 className="font-serif text-3xl font-semibold tracking-tight">设置</h1>
+        <h1 className="font-serif text-3xl font-semibold tracking-tight">研习设置</h1>
         <p className="mt-2 text-sm text-[var(--color-muted)]">
           当前用户：{user.name}
         </p>

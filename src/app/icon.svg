@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect x="1" y="1" width="30" height="30" rx="4" fill="#1F4A3D" />
+  <rect x="1" y="1" width="30" height="30" rx="4" fill="#C94E1E" />
   <rect
     x="4.5"
     y="4.5"
@@ -7,18 +7,18 @@
     height="23"
     rx="2"
     fill="none"
-    stroke="#FBF8F1"
+    stroke="#FAF8F3"
     stroke-width="1.4"
     opacity="0.75"
   />
   <text
     x="16"
     y="16"
-    fill="#FBF8F1"
+    fill="#FAF8F3"
     font-family="Songti SC, SimSun, Noto Serif CJK SC, serif"
     font-size="16"
     font-weight="600"
     text-anchor="middle"
     dominant-baseline="central"
-  >真</text>
+  >词</text>
 </svg>

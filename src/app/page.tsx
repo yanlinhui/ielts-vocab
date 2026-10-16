@@ -1,14 +1,25 @@
 import Link from "next/link";
+import AnswerSheet from "@/components/AnswerSheet";
+import Heatmap from "@/components/Heatmap";
 import ProgressBar from "@/components/ProgressBar";
 import { formatDate } from "@/lib/format";
 import { getTodayStats } from "@/lib/session";
+import { getDailySentence, getHeatmap, type DailySentence } from "@/lib/stats";
 import { getCurrentUser } from "@/lib/user";
 
 export const dynamic = "force-dynamic";
 
+/** 热力图铺多少周。16 周约四个月，一行 16 列在 375px 视口下也放得开 */
+const HEATMAP_WEEKS = 16;
+
 export default async function HomePage() {
   const user = await getCurrentUser();
-  const stats = await getTodayStats(user.id);
+  const [stats, heatmap, sentence] = await Promise.all([
+    getTodayStats(user.id),
+    getHeatmap(user.id, HEATMAP_WEEKS),
+    // 和用户无关，纯按日期挑，所以不用传 userId
+    getDailySentence(),
+  ]);
 
   // 词库还没灌进来。这不是用户操作失误，是环境没初始化好，直接告诉他怎么办。
   if (stats.totalWords === 0) {
@@ -48,8 +59,10 @@ export default async function HomePage() {
               {stats.newDone} / {stats.newLimit}
             </span>
           </div>
-          {/* 新词那条走朱砂：这是今天刚盖上去的印。复习那条仍是墨绿。 */}
-          <ProgressBar done={stats.newDone} total={stats.newLimit} tone="seal" />
+          {/* 新词这条走答题卡式的方格，不走进度条：它的配额是固定的（设置里的
+              每日新词数），格子只增不减，一格一个词地涂过去。涂色走朱砂——
+              这是今天刚盖上去的印。复习那条仍是墨绿进度条，理由见 AnswerSheet 注释。 */}
+          <AnswerSheet done={stats.newDone} total={stats.newLimit} />
         </div>
 
         <div className="flex flex-col gap-2">
@@ -69,7 +82,7 @@ export default async function HomePage() {
           href="/study"
           className={`mt-1 rounded-[var(--radius-control)] px-4 py-2.5 text-center text-sm font-medium transition ${
             hasTodo
-              ? "bg-[var(--color-brand)] text-[var(--color-canvas)] hover:opacity-90"
+              ? "bg-[var(--color-brand)] text-[var(--color-on-brand)] hover:opacity-90"
               : "border border-[var(--color-line)] hover:border-[var(--color-brand)]"
           }`}
         >
@@ -78,52 +91,78 @@ export default async function HomePage() {
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        {/* 打卡数字走朱砂：24px 衬线大字落在卡片面上实测 4.45:1，远超
-            大号字所需的 3:1。没打卡时值是「—」，那就别染红，看着像报错。 */}
+        {/* 三格是同一套排版、同一个颜色。连续打卡曾经是朱砂的——它是全站唯一
+            一处「朱砂数字」。去掉的理由不是规则变了，是三格并排时一格染色会让
+            它们看起来不是一组：同一行里的同伴，要么都染要么都不染。
+
+            第一格的「天」走 unit 那一档：比数字小一半还多、去掉粗体、换成次要色。
+            上一版失败的那次是把「天」按正文字号排在数字旁边，两个字形差不多的
+            字并排，看着像「两个字的词」而不是「一个数加一个单位」。单位要比数字
+            明显弱一档，才读得出主从。 */}
         <Stat
-          label="连续打卡"
-          value={stats.streak > 0 ? `${stats.streak} 天` : "—"}
-          seal={stats.streak > 0}
+          label="连续打卡天数"
+          value={stats.streak > 0 ? String(stats.streak) : "—"}
+          unit={stats.streak > 0 ? "天" : undefined}
         />
         <Stat label="已掌握" value={`${stats.mastered}`} />
         <Stat label="总词数" value={`${stats.totalWords}`} />
       </div>
 
-      <div className="flex flex-wrap gap-2 text-sm">
-        <Link
-          href="/units"
-          className="rounded-[var(--radius-control)] border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
-        >
-          浏览词库
-        </Link>
-        <Link
-          href="/settings"
-          className="rounded-[var(--radius-control)] border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
-        >
-          设置
-        </Link>
-      </div>
+      {/* 排在热力图前面：热力图是「回头看一眼」，每日一句是当下读到的一句，
+          先读句、再回望，读起来顺一些。没取到例句（词库空）就不渲染 */}
+      {sentence && <DailyQuote sentence={sentence} />}
 
       {stats.started === 0 && (
         <p className="text-xs text-[var(--color-muted)]">
           还没有开始。点上面的按钮，从第 1 章开始背第一个词。
         </p>
       )}
+
+      <Heatmap data={heatmap} />
     </div>
   );
 }
 
-function Stat({ label, value, seal = false }: { label: string; value: string; seal?: boolean }) {
+/** 首页那三个统计格。三格刻意长得一模一样——同色、同字号。
+ *
+ *  `unit` 是给「天」这种单位用的：小一号、不加粗、走次要色。**不是每格都有**，
+ *  但走的是同一套排版，所以有单位的格子看着仍像同一个家族的。 */
+function Stat({ label, value, unit }: { label: string; value: string; unit?: string }) {
   return (
     <div className="rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4 text-center">
-      <div
-        className={`font-serif text-2xl font-semibold tabular-nums ${
-          seal ? "text-[var(--color-seal)]" : ""
-        }`}
-      >
+      <div className="font-serif text-3xl font-semibold tabular-nums">
         {value}
+        {unit && (
+          <span className="ml-1 text-sm font-normal text-[var(--color-muted)]">{unit}</span>
+        )}
       </div>
-      <div className="mt-1 text-[11px] tracking-[0.12em] text-[var(--color-muted)]">{label}</div>
+      {/* 标签 10px 而不是全站微标签惯用的 11px：375px 下格子内容宽只有 72px，
+          「连续打卡天数」6 个 11px 汉字加 0.12em 字距是 73.9px，最后一个「数」
+          会被挤到第二行单独站着。10px 降到 67.2px，375px 余 5px。
+
+          nowrap 是兜底：360px 下只剩 0.13px 余量，字体度量稍有出入就会换行。
+          宁可让那 0.13px 溢出到卡片的内边距里（左右各 16px，看不见），也不要
+          让「数」一个人掉到第二行——那才是一眼就看得出的破版。 */}
+      <div className="mt-1 whitespace-nowrap text-[10px] tracking-[0.12em] text-[var(--color-muted)]">
+        {label}
+      </div>
     </div>
+  );
+}
+
+/** 每日一句。按日期确定性选，同一天不变（见 stats.ts 的 getDailySentence）。 */
+function DailyQuote({ sentence }: { sentence: DailySentence }) {
+  return (
+    <section className="border-t border-[var(--color-line)] pt-5">
+      <p className="text-[11px] tracking-[0.3em] text-[var(--color-muted)]">每日一句</p>
+      {/* 左侧一道墨绿竖线：和词卡背面各区块的标题是同一种语言 */}
+      <div className="mt-3 border-l-2 border-[var(--color-brand)] pl-4">
+        <p className="font-serif text-base leading-relaxed">{sentence.en}</p>
+        <p className="mt-1.5 text-sm leading-relaxed text-[var(--color-muted)]">{sentence.cn}</p>
+        <p className="mt-2 text-xs text-[var(--color-muted)]">
+          Chapter {sentence.unitNo} {sentence.unitName} · {sentence.headword}
+        </p>
+      </div>
+    </section>
   );
 }

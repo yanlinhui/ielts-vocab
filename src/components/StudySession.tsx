@@ -94,13 +94,13 @@ export default function StudySession({
           </p>
         ) : (
           <p className="text-sm text-[var(--color-muted)]">
-            今天没有待学的词了。去「词库」挑一个章节加练，或明天再来。
+            今天没有待学的词了。去「章节词汇」挑一个章节加练，或明天再来。
           </p>
         )}
         <div className="mt-2 flex gap-3">
           <Link
             href="/"
-            className="rounded-[var(--radius-control)] bg-[var(--color-brand)] px-4 py-2.5 text-sm font-medium text-[var(--color-canvas)] transition hover:opacity-90"
+            className="rounded-[var(--radius-control)] bg-[var(--color-brand)] px-4 py-2.5 text-sm font-medium text-[var(--color-on-brand)] transition hover:opacity-90"
           >
             回首页
           </Link>
@@ -108,7 +108,7 @@ export default function StudySession({
             href="/units"
             className="rounded-[var(--radius-control)] border border-[var(--color-line)] px-4 py-2.5 text-sm transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
           >
-            浏览词库
+            浏览章节词汇
           </Link>
         </div>
       </div>

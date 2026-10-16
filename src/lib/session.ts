@@ -23,6 +23,10 @@ export interface QueueItem {
   phonetic: string | null;
   pos: string | null;
   meaningCn: string;
+  /** 单词在 ECDICT 标签里的雅思标记。词卡上的「雅思」小印靠它 */
+  isIelts: boolean;
+  /** BNC 语料库词频排位，越小越常用。约 195 个词没有，那种情况词卡不显示刻度 */
+  bncRank: number | null;
   /** 书中原话的释义行。属于书籍原创内容，公开分享时整体关闭 */
   bookMeaning: string | null;
   collocation: string | null;
@@ -61,14 +65,14 @@ export interface TodayStats {
 }
 
 /** 本地时间的今天零点。数据库里存 UTC，用这个和它比较即可。 */
-function startOfToday(now: Date = new Date()): Date {
+export function startOfToday(now: Date = new Date()): Date {
   const d = new Date(now);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-/** 本地时间的 YYYY-MM-DD，用来数「哪几天学习过」。 */
-function localDayKey(d: Date): string {
+/** 本地时间的 YYYY-MM-DD，用来数「哪几天学习过」。热力图也用这个分组 */
+export function localDayKey(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -131,10 +135,26 @@ export async function getTodayStats(userId: number): Promise<TodayStats> {
     reviewLimit,
     reviewDone,
     streak,
-    mastered: progress.filter((p) => p.state === "review" && p.scheduledDays >= 21).length,
+    mastered: progress.filter(isMastered).length,
     totalWords,
     started: progress.length,
   };
+}
+
+/**
+ * 词条是否属于雅思核心词。词卡上的「雅思」小印靠它。
+ *
+ * 用子串判断而不是更严谨的 `split().includes()`：ECDICT 的 tags 就是空格分隔的
+ * 短标签串（gk/ky/cet4/cet6/toefl/ielts/gre/zk），实测 "ielts" 不是其中任何一个
+ * 的子串，两者等价，而子串版本在 SQL 侧能直接写成 LIKE。
+ */
+export function hasIeltsTag(tags: string | null | undefined): boolean {
+  return Boolean(tags && tags.includes("ielts"));
+}
+
+/** Anki 对「成熟卡片」的定义：已进入复习态、间隔拉到 21 天以上。全站只有这一处判据 */
+function isMastered(p: { state: string; scheduledDays: number }): boolean {
+  return p.state === "review" && p.scheduledDays >= 21;
 }
 
 export interface BuildSessionOptions {
@@ -208,6 +228,8 @@ type WordWithRelations = {
   phonetic: string | null;
   pos: string | null;
   meaningCn: string;
+  tags: string | null;
+  bncRank: number | null;
   bookMeaning: string | null;
   collocation: string | null;
   derived: string | null;
@@ -229,6 +251,8 @@ function toQueueItem(
     phonetic: word.phonetic,
     pos: word.pos,
     meaningCn: word.meaningCn,
+    isIelts: hasIeltsTag(word.tags),
+    bncRank: word.bncRank,
     bookMeaning: word.bookMeaning,
     collocation: word.collocation,
     derived: word.derived,
