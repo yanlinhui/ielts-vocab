@@ -160,6 +160,11 @@ IELTS Learning Tools/
 │   │   ├── user.ts                    # getCurrentUser()（多用户预留位）
 │   │   ├── format.ts                  # 时间格式化（"3 天后"/"明天"）
 │   └── global.d.ts                    # `declare module "*.css"`，见第 2 节
+├── tests/                             # 单元测试（node:test + tsx，零新依赖，见第 8 节）
+│   ├── env.ts                         # ★ 把 DATABASE_URL 指向 test.db，必须第一个 import
+│   ├── helpers.ts                     # 建测试库 + 清表 + 造 fixture
+│   ├── srs.test.ts                    # FSRS 调度的形状（12 条）
+│   └── session.test.ts                # 队列规则与日期口径（29 条）
 ├── .env                               # DATABASE_URL（gitignore）
 ├── .claude/launch.json                # 本地 dev server 配置
 └── package.json
@@ -1162,8 +1167,9 @@ n. 宿舍            →  5 n. 宿舍
 
 | 层 | 测什么 | 计划怎么测 | 实际状态 |
 |---|---|---|---|
-| `lib/srs.ts` | FSRS 封装的正确性 | 单元测试：给定初始卡片 + 评分序列，断言 `dueAt` 递进 | ❌ **没写**。阶段二用浏览器 + 直接查库替代（见下） |
-| `lib/session.ts` | 队列构成逻辑 | 单元测试：断言「复习词优先」「新词配额」「上限截断」 | ❌ **没写**，同上 |
+| `lib/srs.ts` | FSRS 封装的正确性 | 单元测试：给定初始卡片 + 评分序列，断言 `dueAt` 递进 | ✅ **2026-10-16 已补**，`tests/srs.test.ts` 12 条（见 8.2） |
+| `lib/session.ts` | 队列构成逻辑 | 单元测试：断言「复习词优先」「新词配额」「上限截断」 | ✅ **2026-10-16 已补**，`tests/session.test.ts` 29 条（见 8.2） |
+| `lib/stats.ts` | 统计口径 | —— | ⬜ 没写。统计页刚落地、没改坏过，这笔不在本轮范围内（见 8.5） |
 | 提取脚本 | 解析规则 | 固定页面样本做 fixture | ✅ 用全书 334 页跑通，产出对得上索引 |
 | 数据质量 | `words.clean.json` | 校验脚本 | ✅ `check_with_ecdict.py` + `reconcile_index.py` |
 | UI | 学习流程 | **手动，无自动化** | ✅ 已在浏览器实测 |
@@ -1182,6 +1188,86 @@ n. 宿舍            →  5 n. 宿舍
 | 生产构建 | `npx next build` | 通过 ✅ |
 
 **这笔技术债要在阶段三之前还掉**：`lib/srs.ts` 是纯函数（输入卡片 + 评分 → 输出新卡片），最好测；一旦 FSRS 参数调错，症状是「复习量不知不觉变得不合理」，不写测试很难发现。阶段三开工第一件事是补 `srs.ts` 和 `session.ts` 的单元测试。
+
+### 8.1 为什么逾期了才发现
+
+阶段三的粘连修复、热力图、统计页都做完之后才还上，原因是**后两项任务开始变得危险**：拼写/听写模式要动 `StudySession`，错词本要动 `buildSession`，两处都落在核心学习链路上。而 `buildSession` 的章节专项分支在 **2026-10-16 连着修了两轮**（先「点某一章只练那一章」实际变成「今天要背的那几个词恰好在这一章」，后「学过的词也在队列里、每次从头重排」），两次都是用户报错才发现的。有测试网兜着，这类回归自己就会红。
+
+### 8.2 怎么做到零新依赖
+
+这是本项目第一次引入测试，硬约束「零新依赖」照样守住了——现成的东西已经够：
+
+| 需要什么 | 用什么 |
+|---|---|
+| 测试框架 | Node 内置 **`node:test`**（Node v22.18.0） |
+| 断言 | Node 内置 **`node:assert/strict`** |
+| 跑 TypeScript | **`tsx --test`**（`tsx@4.23.15` 已在 devDependencies，它把 node 的参数透传） |
+
+**没装 vitest / jest**。项目的测试需求是「纯函数 + 一个临时 SQLite」，Node 自带的足够；装 vitest 要多背 Vite 和一堆转译依赖。
+
+```json
+"test": "tsx --test --test-concurrency=1 tests/srs.test.ts tests/session.test.ts"
+```
+
+> **显式列文件，不用 `tests/**/*.test.ts` 通配**：npm 在 Windows 上走 `cmd.exe` 跑 script，通配展开行为跟 bash 不一致；将来加文件时顺手补一个名字，比赌通配符的跨平台行为稳。
+
+### 8.3 测试库怎么和 `dev.db` 隔离
+
+`session.ts` 的队列逻辑必须查真库才有意义（`where: { progress: { none: { userId } } }` 这种关系过滤，mock 掉 prisma 就等于没测），所以要建一个**独立的测试库** `prisma/test.db`。
+
+指过去靠 **env 覆盖，不改 `.env`**：
+
+```ts
+// tests/env.ts —— 必须被测试文件「第一个」import
+process.env.DATABASE_URL = "file:./test.db";
+```
+
+两个已核实的关键点：
+
+1. **`import` 的求值顺序按声明顺序**，所以 `import "./env"` 写在 `import "../src/lib/session"` 前面，env 就一定先设好。被测模块内部是静态 `import { prisma } from "./db"`，`db.ts` 在模块求值时就 `new PrismaClient()` 读 env——那时已经被覆盖了。
+2. **Prisma 不会用 `.env` 盖掉已经设好的值**。`@prisma/client` 运行时确实会调 `tryLoadEnvs` 读 `.env`，但走的是 dotenv 语义——**已存在的 `process.env` 优先，dotenv 默认不覆盖**。
+
+建库用 `npx prisma migrate deploy`（不是 `db push`）：仓库已有 `prisma/migrations/`，deploy 幂等、结果确定、不做 drift 检查。`prisma/test.db` 落在 `.gitignore` 的 `prisma/*.db*` 覆盖范围内，不用改 `.gitignore`。
+
+> **为什么不用 `new PrismaClient({ datasources: ... })`**：那得让 `db.ts` 导出可注入的构造函数，或者在产品代码里加「测试专用参数」。env 覆盖零侵入，产品代码一行不用动。
+
+### 8.4 断言「形状」，不断言精确日期
+
+这是最容易写错的地方。`FSRS_PARAMS.enable_fuzz: true`，而 ts-fsrs 的 fuzz seed 是 `` `${time}_${reps}_${difficulty*stability}` ``——**跟着时钟变**，所以断言「下次一定是 3 天后」的测试会随机红。断言分两档：
+
+- **分钟级的学习步长可以断言到毫秒**：`ivl < 2.5` 时 ts-fsrs 直接 `Math.round(ivl)`、不过 fuzz，所以新卡答「忘了」的 `dueAt - now` 恰好是 1 分钟、答「一般」恰好 10 分钟
+- **天级的复习间隔只断言关系**：四档 `dueAt` 严格递增、评完「简单」后 `scheduledDays` 变大、`state` 从 `learning` 推进到 `review`。**不写「下次一定是 N 天后」**
+
+时间一律注入——`previewIntervals(row, now)` / `emptyCard(now)` 本来就接受 `now`，测试传固定时刻，不依赖 `Date.now()`。
+
+### 8.5 为什么测试文件必须串行
+
+**所有测试文件共用同一个 `prisma/test.db`，所以必须串行跑**（script 里那个 `--test-concurrency=1`）。Node 的 test runner 默认并发跑测试文件，两个文件同时 `resetDb()` 会互相把对方刚塞的 fixture 删掉——症状是「**单独跑全过、一起跑随机红一条**」，很难查。这个坑实测踩到过。
+
+### 8.6 变异检查（绿了不代表在测东西）
+
+41 条全绿之后，手动改坏四处生产代码，确认每处都让测试**变红**，再改回：
+
+| 改坏什么 | 哪条变红 |
+|---|---|
+| `session.ts` 的 `isMastered`：`21` → `20` | 「复习态且间隔 ≥ 21 天才算掌握」 |
+| `session.ts` 的 `buildUnitSession`：删掉 `progress: { none: { userId } }` | 「学过的词不再出现」「整章学完给空队列」 |
+| `srs.ts` 的 `FSRS_PARAMS.enable_short_term` 改 `false` | 6 条 |
+| `session.ts` 的 `buildSession`：去掉 `dueAt: { lte: now }` | 「还没到期的词不进队列」 |
+
+改回后复跑全绿，`git diff src/` 为空——**产品代码零残留改动**。
+
+### 8.7 本轮验证结果（2026-10-16）
+
+| 验的什么 | 怎么验 | 结果 |
+|---|---|---|
+| 测试全过 | `npm test` | **41/41 绿**（11 个 suite），耗时约 20 秒 |
+| 没碰真实进度 | 测试前后对 `prisma/dev.db` 取指纹（大小 + mtime + md5） | **逐位一致**（1617920 / `2026-10-16 16:55:30.515869400` / `644229447fcbb0249a48de748c2b237a`） |
+| 类型无错 | `npx tsc --noEmit` | 退出码 0（`tsconfig.json` 的 `include: ["**/*.ts", …]` 自然覆盖 `tests/`） |
+| 不回归 | 五个页面 HTTP 码 | `/`、`/units`、`/study`、`/settings`、`/stats` **全部 200** |
+| 产品代码零改动 | `git diff --stat src/` | 空 |
+
+**明确没做**：不给 React 组件写测试（UI 还是手动实测那套，项目没有 jsdom 也不打算加）；不写 CI（还没有远程仓库）；不给 `lib/stats.ts` 写测试（代码还新、没改坏过，同类逻辑以后按这套补即可）；不追求覆盖率数字；不重构 `srs.ts` / `session.ts` 来「方便测试」。
 
 ---
 
@@ -1212,6 +1298,14 @@ npm run dev                # http://localhost:3000
 ```
 
 **日常**：只要 `npm run dev`。数据库是本地文件 `prisma/dev.db`，关掉重开进度还在。
+
+**跑测试**
+
+```bash
+npm test
+```
+
+41 条，约 20 秒，`tsx --test --test-concurrency=1 tests/srs.test.ts tests/session.test.ts`。打的是独立的 `prisma/test.db`，**不碰 `dev.db`**；测试进程不写 `.next/`，**和正在跑的 dev server 不冲突**（不需要停 dev）。原理见第 8 节。
 
 **⚠️ 一个坑：`next build` 和 `next dev` 不能同时跑。**
 

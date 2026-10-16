@@ -1,0 +1,426 @@
+// 会话队列的测试。
+//
+// 前半是纯函数（日期、标签、掌握判据），后半查真库——`buildSession` 的队列规则
+// 全是 Prisma 的关系查询（`where: { progress: { none: { userId } } }` 这种），
+// mock 掉 prisma 就等于没测，所以打的是 `prisma/test.db`（见 env.ts）。
+//
+// 挑出来的都是**改坏过或写错过**的地方：`localDayKey` 的本地日、章节专项连着修
+// 了两轮的那三条、以及「新词当天反复提问不算复习」那条语义。
+
+import "./env";
+import assert from "node:assert/strict";
+import { before, beforeEach, describe, it } from "node:test";
+import {
+  buildSession,
+  getTodayStats,
+  hasIeltsTag,
+  isMastered,
+  localDayKey,
+  startOfToday,
+} from "../src/lib/session";
+import {
+  daysAgo,
+  ensureTestDb,
+  makeLog,
+  makeProgress,
+  makeSettings,
+  makeUnit,
+  makeUser,
+  makeWord,
+  resetDb,
+} from "./helpers";
+
+describe("localDayKey", () => {
+  it("回的是本地日历日，不是 UTC 日", () => {
+    // 用本地时间构造，避免测试跟着跑测机器的时区变
+    assert.equal(localDayKey(new Date(2026, 9, 16, 23, 59, 0)), "2026-10-16");
+    assert.equal(localDayKey(new Date(2026, 9, 17, 0, 1, 0)), "2026-10-17");
+  });
+
+  it("同一天从早到晚都是同一个 key", () => {
+    const keys = [
+      new Date(2026, 9, 16, 0, 0, 0),
+      new Date(2026, 9, 16, 12, 0, 0),
+      new Date(2026, 9, 16, 23, 59, 59),
+    ].map(localDayKey);
+    assert.deepEqual(new Set(keys).size, 1, `同一天给出了多个 key：${keys.join(", ")}`);
+  });
+
+  it("月份和日都补零，方便排序和比较", () => {
+    assert.equal(localDayKey(new Date(2026, 0, 5, 9, 0, 0)), "2026-01-05");
+  });
+});
+
+describe("startOfToday", () => {
+  it("把一天里的任何时刻压到本地零点", () => {
+    const start = startOfToday(new Date(2026, 9, 16, 23, 59, 30, 500));
+    assert.equal(start.getFullYear(), 2026);
+    assert.equal(start.getMonth(), 9);
+    assert.equal(start.getDate(), 16);
+    assert.equal(start.getHours(), 0);
+    assert.equal(start.getMinutes(), 0);
+    assert.equal(start.getSeconds(), 0);
+    assert.equal(start.getMilliseconds(), 0);
+  });
+
+  it("不晚于传入的时刻", () => {
+    const now = new Date(2026, 9, 16, 8, 30, 0);
+    assert.ok(startOfToday(now).getTime() <= now.getTime());
+  });
+});
+
+describe("hasIeltsTag", () => {
+  it("认得出雅思标签，认不出别的", () => {
+    assert.equal(hasIeltsTag("ielts cet6"), true);
+    assert.equal(hasIeltsTag("cet4 cet6"), false);
+    assert.equal(hasIeltsTag(null), false);
+    assert.equal(hasIeltsTag(undefined), false);
+    assert.equal(hasIeltsTag(""), false);
+  });
+
+  it("「ielts」不是其它任何标签的子串——子串判断才和精确切分等价", () => {
+    // 这条守的是函数注释里那个论断。哪天 ECDICT 加了个含 ielts 的标签
+    // （比如 "ieltscore"），子串写法就会误判，这条会红。
+    const others = ["gk", "ky", "cet4", "cet6", "toefl", "gre", "zk"];
+    for (const tag of others) {
+      assert.ok(!tag.includes("ielts"), `标签 ${tag} 里含 ielts，子串判断不再等价`);
+    }
+  });
+});
+
+describe("isMastered", () => {
+  it("复习态且间隔 ≥ 21 天才算掌握", () => {
+    assert.equal(isMastered({ state: "review", scheduledDays: 21 }), true);
+    assert.equal(isMastered({ state: "review", scheduledDays: 365 }), true);
+    assert.equal(isMastered({ state: "review", scheduledDays: 20 }), false);
+  });
+
+  it("别的状态一律不算，间隔再长也不算", () => {
+    assert.equal(isMastered({ state: "learning", scheduledDays: 999 }), false);
+    assert.equal(isMastered({ state: "relearning", scheduledDays: 999 }), false);
+    assert.equal(isMastered({ state: "new", scheduledDays: 0 }), false);
+  });
+});
+
+describe("buildSession —— 每日队列", () => {
+  before(() => {
+    ensureTestDb();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  /** 一章 N 个词，可选地改设置。返回 id 方便后续塞进度。 */
+  async function seed(
+    opts: { words?: number; newLimit?: number; reviewLimit?: number } = {},
+  ) {
+    const userId = await makeUser();
+    const unitId = await makeUnit(1);
+    if (opts.newLimit !== undefined || opts.reviewLimit !== undefined) {
+      await makeSettings(userId, opts.newLimit ?? 20, opts.reviewLimit ?? 200);
+    }
+    const wordIds: number[] = [];
+    for (let i = 1; i <= (opts.words ?? 0); i++) {
+      wordIds.push(await makeWord(unitId, i));
+    }
+    return { userId, unitId, wordIds };
+  }
+
+  /** 一张已进入复习态、且此刻到期的卡。 */
+  async function makeDue(userId: number, wordId: number, over = {}) {
+    await makeProgress(userId, wordId, {
+      state: "review",
+      scheduledDays: 30,
+      stability: 30,
+      difficulty: 5,
+      reps: 5,
+      dueAt: daysAgo(1),
+      lastReviewAt: daysAgo(31),
+      ...over,
+    });
+  }
+
+  it("到期的旧词排在没学过的新词前面", async () => {
+    const { userId, wordIds } = await seed({ words: 5 });
+    await makeDue(userId, wordIds[0]);
+    await makeDue(userId, wordIds[1]);
+
+    const queue = await buildSession(userId);
+
+    assert.equal(queue.length, 5, "2 个复习 + 3 个新词");
+    assert.deepEqual(
+      queue.map((q) => q.isNew),
+      [false, false, true, true, true],
+      "旧词没排在前面",
+    );
+  });
+
+  it("新词数量受每日新词上限约束", async () => {
+    const { userId } = await seed({ words: 10, newLimit: 3 });
+
+    const queue = await buildSession(userId);
+
+    assert.equal(queue.filter((q) => q.isNew).length, 3);
+    assert.equal(queue.length, 3);
+  });
+
+  it("配额要扣掉今天已经学过的", async () => {
+    const { userId, wordIds } = await seed({ words: 10, newLimit: 5 });
+    // 今天学的两个，到期时间在明天——所以不会混进复习队列
+    await makeProgress(userId, wordIds[0], { dueAt: daysAgo(-1), createdAt: new Date() });
+    await makeProgress(userId, wordIds[1], { dueAt: daysAgo(-1), createdAt: new Date() });
+
+    const queue = await buildSession(userId);
+
+    assert.equal(
+      queue.filter((q) => q.isNew).length,
+      3,
+      "上限 5、今天已学 2，只该再给 3 个",
+    );
+  });
+
+  it("到期复习数受每日复习上限截断", async () => {
+    const { userId, wordIds } = await seed({ words: 5, newLimit: 0, reviewLimit: 2 });
+    for (const id of wordIds) await makeDue(userId, id);
+
+    const queue = await buildSession(userId);
+
+    assert.equal(queue.length, 2, "5 个到期词该被上限截到 2 个");
+    assert.ok(queue.every((q) => !q.isNew));
+  });
+
+  it("还没到期的词不进队列", async () => {
+    const { userId, wordIds } = await seed({ words: 3, newLimit: 0 });
+    await makeDue(userId, wordIds[0], { dueAt: daysAgo(-2) });
+
+    assert.equal((await buildSession(userId)).length, 0);
+  });
+
+  it("newLimit 参数能覆写设置里的上限", async () => {
+    const { userId } = await seed({ words: 10, newLimit: 2 });
+
+    assert.equal((await buildSession(userId)).length, 2);
+    assert.equal(
+      (await buildSession(userId, { newLimit: 7 })).filter((q) => q.isNew).length,
+      7,
+      "「额外加练」靠这个覆写",
+    );
+  });
+
+  it("队列项带上词自己的字段：雅思标记、章节号、例句", async () => {
+    const userId = await makeUser();
+    const unitId = await makeUnit(3, "科技");
+    await makeWord(unitId, 1, "algorithm", { tags: "ielts cet6", meaningCn: "算法" });
+    await makeWord(unitId, 2, "gizmo", { tags: "cet4", meaningCn: "小玩意儿" });
+
+    const queue = await buildSession(userId);
+    const algo = queue.find((q) => q.headword === "algorithm");
+    const gizmo = queue.find((q) => q.headword === "gizmo");
+
+    assert.ok(algo && gizmo);
+    assert.equal(algo.isIelts, true);
+    assert.equal(gizmo.isIelts, false);
+    assert.equal(algo.unitNo, 3);
+    assert.equal(algo.unitName, "科技");
+    assert.equal(algo.meaningCn, "算法");
+    assert.equal(algo.isNew, true);
+    assert.equal(Object.keys(algo.previews).sort().join(""), "1234");
+  });
+});
+
+describe("buildSession —— 章节专项", () => {
+  before(() => {
+    ensureTestDb();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  /** 两个单元：A 有 3 个词、B 有 2 个。 */
+  async function seedTwoUnits() {
+    const userId = await makeUser();
+    const unitA = await makeUnit(1);
+    const unitB = await makeUnit(2);
+    const a: number[] = [];
+    const b: number[] = [];
+    for (let i = 1; i <= 3; i++) a.push(await makeWord(unitA, i, `a${i}`));
+    for (let i = 1; i <= 2; i++) b.push(await makeWord(unitB, i, `b${i}`));
+    return { userId, unitA, unitB, a, b };
+  }
+
+  it("只给这一章的词，别的章一个都不出现", async () => {
+    const { userId, unitA, a } = await seedTwoUnits();
+
+    const queue = await buildSession(userId, { unitId: unitA });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId).sort((x, y) => x - y),
+      [...a].sort((x, y) => x - y),
+    );
+  });
+
+  it("学过的词不再出现——再进来是接着上次学", async () => {
+    const { userId, unitA, a } = await seedTwoUnits();
+    await makeProgress(userId, a[0], { dueAt: daysAgo(-1) });
+
+    const queue = await buildSession(userId, { unitId: unitA });
+
+    assert.equal(queue.length, 2);
+    assert.ok(
+      !queue.some((q) => q.wordId === a[0]),
+      "学过第一个词之后，第一个词不该又排在队首",
+    );
+  });
+
+  it("不套每日新词上限——整章给全", async () => {
+    const { userId, unitA } = await seedTwoUnits();
+    await makeSettings(userId, 1, 200);
+
+    const queue = await buildSession(userId, { unitId: unitA });
+
+    assert.equal(queue.length, 3, "dailyNewLimit 是 1，但章节专项不该被它拦住");
+  });
+
+  it("按书里的顺序给", async () => {
+    const { userId, unitA, a } = await seedTwoUnits();
+
+    const queue = await buildSession(userId, { unitId: unitA });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId),
+      a,
+      "应该按 orderInUnit 升序，也就是建的时候那个顺序",
+    );
+  });
+
+  it("整章学完给空队列——学习页靠它显示「这一章已经学完」", async () => {
+    const { userId, unitA, a } = await seedTwoUnits();
+    for (const id of a) await makeProgress(userId, id, { dueAt: daysAgo(-1) });
+
+    assert.equal((await buildSession(userId, { unitId: unitA })).length, 0);
+  });
+});
+
+describe("getTodayStats", () => {
+  before(() => {
+    ensureTestDb();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  async function seed(words: number, newLimit = 20) {
+    const userId = await makeUser();
+    const unitId = await makeUnit(1);
+    await makeSettings(userId, newLimit, 200);
+    const wordIds: number[] = [];
+    for (let i = 1; i <= words; i++) wordIds.push(await makeWord(unitId, i));
+    return { userId, wordIds };
+  }
+
+  it("newDone 只数今天首次创建的进度行", async () => {
+    const { userId, wordIds } = await seed(5, 3);
+    await makeProgress(userId, wordIds[0], { createdAt: new Date() });
+    await makeProgress(userId, wordIds[1], { createdAt: new Date() });
+    await makeProgress(userId, wordIds[2], { createdAt: daysAgo(1) });
+
+    const stats = await getTodayStats(userId);
+
+    assert.equal(stats.newDone, 2);
+    assert.equal(stats.newLimit, 3);
+    assert.equal(stats.newRemaining, 1);
+  });
+
+  it("学超了配额，剩余数也不会变成负的", async () => {
+    const { userId, wordIds } = await seed(5, 2);
+    for (const id of wordIds.slice(0, 4)) {
+      await makeProgress(userId, id, { createdAt: new Date() });
+    }
+
+    const stats = await getTodayStats(userId);
+
+    assert.equal(stats.newDone, 4);
+    assert.equal(stats.newRemaining, 0);
+  });
+
+  it("今天学的词在当天被反复提问，不算复习", async () => {
+    const { userId, wordIds } = await seed(3);
+    await makeProgress(userId, wordIds[0], {
+      state: "learning",
+      dueAt: daysAgo(-1),
+      createdAt: new Date(),
+    });
+    await makeLog(userId, wordIds[0], 3, new Date());
+    await makeLog(userId, wordIds[0], 1, new Date());
+
+    const stats = await getTodayStats(userId);
+
+    assert.equal(stats.reviewDone, 0, "新词当天的重复提问是学习过程，不是复习");
+  });
+
+  it("昨天学的词今天再答，算复习", async () => {
+    const { userId, wordIds } = await seed(3);
+    await makeProgress(userId, wordIds[0], {
+      state: "learning",
+      dueAt: daysAgo(-1),
+      createdAt: daysAgo(1),
+    });
+    await makeLog(userId, wordIds[0], 3, new Date());
+
+    const stats = await getTodayStats(userId);
+
+    assert.equal(stats.reviewDone, 1);
+  });
+
+  it("今天学过就从今天起算连续天数", async () => {
+    const { userId, wordIds } = await seed(3);
+    await makeLog(userId, wordIds[0], 3, new Date());
+    await makeLog(userId, wordIds[0], 3, daysAgo(1));
+
+    assert.equal((await getTodayStats(userId)).streak, 2);
+  });
+
+  it("今天还没学、但昨天学过——不算断", async () => {
+    const { userId, wordIds } = await seed(3);
+    await makeLog(userId, wordIds[0], 3, daysAgo(1));
+    await makeLog(userId, wordIds[0], 3, daysAgo(2));
+
+    assert.equal((await getTodayStats(userId)).streak, 2);
+  });
+
+  it("昨天也没学就断了", async () => {
+    const { userId, wordIds } = await seed(3);
+    await makeLog(userId, wordIds[0], 3, daysAgo(2));
+    await makeLog(userId, wordIds[0], 3, daysAgo(3));
+
+    assert.equal((await getTodayStats(userId)).streak, 0);
+  });
+
+  it("started / mastered / totalWords 三个数对得上", async () => {
+    const { userId, wordIds } = await seed(5);
+    await makeProgress(userId, wordIds[0], {
+      state: "review",
+      scheduledDays: 21,
+      stability: 21,
+      difficulty: 5,
+      dueAt: daysAgo(-1),
+    });
+    await makeProgress(userId, wordIds[1], {
+      state: "review",
+      scheduledDays: 20,
+      stability: 20,
+      difficulty: 5,
+      dueAt: daysAgo(-1),
+    });
+    await makeProgress(userId, wordIds[2], { dueAt: daysAgo(-1) });
+
+    const stats = await getTodayStats(userId);
+
+    assert.equal(stats.started, 3);
+    assert.equal(stats.mastered, 1, "间隔 20 天那行不该算进已掌握");
+    assert.equal(stats.totalWords, 5);
+  });
+});
