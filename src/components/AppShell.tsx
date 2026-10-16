@@ -1,6 +1,3 @@
-"use client";
-
-import { usePathname } from "next/navigation";
 import Nav from "./Nav";
 
 /**
@@ -8,18 +5,17 @@ import Nav from "./Nav";
  *
  * 导航有两套排布，靠断点切换，**始终只有一套在无障碍树里**（另一套是
  * display:none，会被读屏剔除）：
- * - <1024px：横在顶部的栏（就是改版前那条）
+ * - <1024px：横在顶部的栏
  * - ≥1024px：竖在左侧的栏
  *
- * 拆成 client component 是因为 layout.tsx 是 server component、读不到
- * pathname，而「学习页要不要收起左侧栏」必须知道当前路由。children 由
- * server 传进来，页面本身仍然是服务端渲染的。
+ * 侧栏**每一页都在**，包括学习页。此前学习页走「沉浸」（`IMMERSIVE =
+ * ["/study"]`）、桌面端整块不挂载侧栏，2026-10-16 撤掉：背词中途想换个
+ * 章节或去设置，只能手打地址；而右侧卡片本来就只用 768px，让出 240px
+ * 不改变它的宽度。
+ *
+ * 撤掉之后这里就不需要 pathname 了，于是退回 server component——只有
+ * Nav 自己是 client（它得读 pathname 标记当前页）。
  */
-
-// 学习页要沉浸（PRD 1.3「一次只做一件事」）。**只收桌面那侧的栏**——
-// 窄屏顶部栏照旧保留，否则手机上就没有任何出口了，而这页底下只有一个
-// 「退出」按钮。
-const IMMERSIVE = ["/study"];
 
 /**
  * 深色面（左侧栏 + 窄屏顶栏）共用的一套令牌重定义。
@@ -89,9 +85,6 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-  const immersive = IMMERSIVE.some((p) => pathname.startsWith(p));
-
   return (
     <div className="lg:flex">
       {/* 窄屏顶栏和左侧栏是同一个深色面，只是换了个方向——两处共用 DARK_SURFACE，
@@ -115,21 +108,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           上一版右缘还有一对「书口双线」（border-r + after 伪元素），这一版去掉了：
           深色面与暖白面之间本来就是一道硬边界，参考图也是干净的直切，再叠两条
           线只会显脏。 */}
-      {!immersive && (
-        <aside
-          className={`hidden px-4 py-6 lg:sticky lg:top-0 lg:flex lg:h-dvh lg:w-[240px] lg:shrink-0 lg:flex-col lg:bg-[var(--color-rail)] ${DARK_SURFACE}`}
-        >
-          <BrandMark />
-          {/* 「目录」是版式标签，不是内容——不含任何进度信息，和「侧栏不放进度
-              摘要」那条不冲突。标题下压一条通栏细线，导航项之间也是发丝线。 */}
-          <div className="mt-7 flex flex-col">
-            <p className="border-b border-[var(--color-line)] pb-2 text-[11px] tracking-[0.3em] text-[var(--color-muted)]">
-              目录
-            </p>
-            <Nav variant="rail" />
-          </div>
-        </aside>
-      )}
+      <aside
+        className={`hidden px-4 py-6 lg:sticky lg:top-0 lg:flex lg:h-dvh lg:w-[240px] lg:shrink-0 lg:flex-col lg:bg-[var(--color-rail)] ${DARK_SURFACE}`}
+      >
+        <BrandMark />
+        {/* 「目录」是版式标签，不是内容——不含任何进度信息，和「侧栏不放进度
+            摘要」那条不冲突。标题下压一条通栏细线，导航项之间也是发丝线。 */}
+        <div className="mt-7 flex flex-col">
+          <p className="border-b border-[var(--color-line)] pb-2 text-[11px] tracking-[0.3em] text-[var(--color-muted)]">
+            目录
+          </p>
+          <Nav variant="rail" />
+        </div>
+      </aside>
 
       {/* lg:min-w-0 不是可选的保险：flex 子项的 min-width 默认是 auto，
           长单词（internationalization）会把这一列顶宽、溢出到侧边栏底下。

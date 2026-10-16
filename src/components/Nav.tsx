@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 
 // 导航链接。拆成 client component 是因为 layout.tsx 是 server component，
 // 读不到 pathname —— 而「当前在哪一页」必须高亮出来，否则三个链接永远长得一样。
@@ -86,13 +86,32 @@ const NAV = [
 
 export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
   const pathname = usePathname();
+  const unitParam = useSearchParams().get("unit");
   const rail = variant === "rail";
+
+  // 当前页。学习页自己没有导航项，归属看**是打哪儿进来的**——两个入口：
+  // - 首页「开始」按钮 → `/study`（不带参数）  → 算「今日功课」
+  //   这一页是首页那条动线的进行状态，不是并列的第四个板块
+  // - 章节词汇点某一章 → `/study?unit=N`       → 算「章节词汇」
+  //
+  // ⚠️ 必须读 search params，光看 pathname 分不出这两种——query 不在 pathname 里。
+  // 一开始只判了 pathname、把整个 `/study` 都算给「今日功课」，于是从章节进来的
+  // 学习页也亮「今日功课」，是个实打实的误导（2026-10-16 用户报的）。
+  //
+  // 用 `useSearchParams` 是安全的：四个页面全是 `force-dynamic`，没有静态预渲染，
+  // 不会触发 CSR bailout（那才是需要 Suspense 边界的场景）。
+  const current = pathname.startsWith("/study")
+    ? unitParam
+      ? "/units"
+      : "/"
+    : pathname;
 
   return (
     <nav className={rail ? "flex flex-col" : "flex items-center gap-1"}>
       {NAV.map((item) => {
         // 根路径要全等，否则任何页面都会命中 "/"
-        const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+        const active =
+          item.href === "/" ? current === "/" : current.startsWith(item.href);
 
         // 当前页两套排布都用**朱砂**标出来，但画法不同，因为两个面的高度差很多：
         // - rail：整块朱砂覆盖（选中实色、划过半透明），文字提到 rail-ink

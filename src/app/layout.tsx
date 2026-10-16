@@ -33,8 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN" className={serif.variable}>
       <body className="min-h-full">
-        {/* 导航和内容区的层架在 AppShell 里——它要读 pathname 才能决定
-            学习页收不收起左侧栏，而这里读不到。 */}
+        {/* 导航和内容区的层架在 AppShell 里。 */}
         <AppShell>{children}</AppShell>
       </body>
     </html>
