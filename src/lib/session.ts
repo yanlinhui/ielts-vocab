@@ -63,7 +63,7 @@ export interface TodayStats {
   streak: number;
   /** 已掌握（间隔 ≥ 21 天，Anki 对「成熟卡片」的定义） */
   mastered: number;
-  /** 词库总词数 */
+  /** 全书总词数 */
   totalWords: number;
   /** 已经开始学的词数（有过至少一次作答） */
   started: number;

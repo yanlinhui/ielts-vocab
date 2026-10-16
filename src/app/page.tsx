@@ -21,11 +21,11 @@ export default async function HomePage() {
     getDailySentence(),
   ]);
 
-  // 词库还没灌进来。这不是用户操作失误，是环境没初始化好，直接告诉他怎么办。
+  // 词表还没灌进来。这不是用户操作失误，是环境没初始化好，直接告诉他怎么办。
   if (stats.totalWords === 0) {
     return (
       <div className="rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-6">
-        <h1 className="font-serif text-lg font-semibold">词库是空的</h1>
+        <h1 className="font-serif text-lg font-semibold">这本书还没有词</h1>
         <p className="mt-2 text-sm text-[var(--color-muted)]">
           数据库里还没有单词。在项目目录下跑一次灌库脚本：
         </p>
@@ -109,7 +109,7 @@ export default async function HomePage() {
       </div>
 
       {/* 排在热力图前面：热力图是「回头看一眼」，每日一句是当下读到的一句，
-          先读句、再回望，读起来顺一些。没取到例句（词库空）就不渲染 */}
+          先读句、再回望，读起来顺一些。没取到例句（词表为空）就不渲染 */}
       {sentence && <DailyQuote sentence={sentence} />}
 
       {stats.started === 0 && (

@@ -35,7 +35,7 @@ export default async function SettingsPage() {
         <h2 className="font-medium">学习状态</h2>
         {/* 排成账册的样子：一行一项、行间发丝线，数字用衬线右对齐 */}
         <dl className="mt-2 text-[var(--color-muted)]">
-          <StatRow label="词库总词数" value={`${stats.totalWords}`} />
+          <StatRow label="总词数" value={`${stats.totalWords}`} />
           <StatRow label="开始学过的" value={`${stats.started}`} />
           <StatRow label="已掌握（间隔 ≥ 21 天）" value={`${stats.mastered}`} />
           <StatRow label="连续打卡" value={`${stats.streak} 天`} />
