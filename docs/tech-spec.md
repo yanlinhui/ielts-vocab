@@ -766,6 +766,61 @@ where: { unitId, progress: { none: { userId } } }
 
 > ⚠️ **验的时候踩了一个坑**：预览面板被收起时 `innerWidth/innerHeight` 是 `0x0`，`WordCard` 那个量高度写进内联样式的 effect 会量到废值并把它留在 DOM 上——当时读到 `.flip-scene` 高 **758px**，看着像锁高坏了。**先 `preview_resize` 定好视口、再 `reload` 重跑 effect，读数才是真的**（重载后是 320px）。
 
+### 6.2 「已学」与「已掌握」两个口径（2026-10-16）
+
+**起因**：用户报「章节词汇学习完之后，更新的进度没有能及时更新至章节词汇这个页面」。查完的结论是——**进度一行没丢，是那个数字的口径和直觉对不上**。
+
+#### 页面原来只显示「已掌握」
+
+`/units` 每行右边那栏从 [units/page.tsx:70](src/app/units/page.tsx:70) 显示的是 `{mastered} / {total}`，判据在 [第 27 行](src/app/units/page.tsx:27)：
+
+```ts
+if (p.state === "review" && p.scheduledDays >= 21) slot.mastered += 1;
+```
+
+21 天是 Anki 对「成熟卡片」的定义，和 `lib/session.ts:161` 的 `isMastered()` 同口径。刚学完的词 `scheduledDays` 只有几天，**这个数本来就不会动**。页面上能反映「学过」的只有下面那条进度条（`done={started}`），但它是按比例画的——第 2 章 124 个词，学 3 个 = 2.4%，肉眼看不出来。
+
+**实测佐证**：第 1 章真实有 **24** 行 `UserWordProgress`，那栏却只显示 `1 / 233`（只有 `atmosphere` 的间隔到了 21 天以上）。
+
+#### 排查中洗清的三条假设
+
+| 假设 | 怎么测的 | 结果 |
+|---|---|---|
+| Next 路由缓存 / `staleTimes` 配错 | 读 `next.config.ts` — **没有** `staleTimes`，只有 `serverExternalPackages`；四个页面全是 `export const dynamic = "force-dynamic"` | ❌ 不是 |
+| `<Link>` 预取拿到旧数据 | `/settings` 载入时侧栏会预取 `/units`（当时 unit 2 有 1 行）→ 往库里插第 2 行 → 点侧栏「章节词汇」→ 读到 `aria-valuenow="2"` | ❌ 不是，是新值 |
+| 浏览器**后退键**返回陈旧页面 | 进 `/study?unit=2` → 插第 3 行 → `history.back()` → 读到 `aria-valuenow="2"`；硬刷新后同一页读到 **3** | ⚠️ 不是本项目的 bug |
+
+后退那条要多说一句：那是 **bfcache**（前进后退缓存）——浏览器把离开时的页面整页冻住、原样还给你，不重新请求。**任何网站都这样**，包括 Anki Web、维基百科。判断依据就是「后退读到 2、硬刷新读到 3」，两者的差额正是 bfcache 冻结的那段时间里写入的那一行。
+
+#### 改法：两个数并排，给不同的色
+
+```tsx
+<span className="shrink-0 whitespace-nowrap text-xs tabular-nums">
+  <span className="text-[var(--color-ink)]">已学 {started}</span>
+  <span className="mx-1.5 text-[var(--color-muted)]">·</span>
+  <span className="text-[var(--color-muted)]">掌握 {mastered} / {total}</span>
+</span>
+```
+
+- **「已学」用正文墨色**——它是随时在动的那个（学一个涨一个）
+- **「掌握」用次要色**——21 天才动一次，不该抢视线
+- 外层 `shrink-0 whitespace-nowrap`：数字块不参与收缩、不折行；右边的点线 leader 是 `flex-1`，随宽度收缩吸收差额
+- **没有新增颜色令牌**，只用了既有的 `--color-ink` / `--color-muted`
+
+页面底部那行小字也重写了，把两个口径讲清（原来只说「右边的数字是已掌握 / 总词数」，现在两个数），否则同样会有人盯着「掌握」以为没保存。
+
+#### 验证
+
+| 项 | 结果 |
+|---|---|
+| 375×812 | 数字块 **119px**、单行不折、`scrollWidth - clientWidth` = **0**；22 行行高一致（60~61px） |
+| 1280×800 | 同上，横向溢出 **0** |
+| 对比度（对纸底 `#faf8f3`） | 已学 `#1b1815` **16.65:1**；掌握 `#6e6353` **5.54:1**（小字需 ≥4.5:1） |
+| 数据核对 | 第 1 章进度条 `aria-valuenow` = **24** = 库里该章行数；第 2 章清掉临时行后回到 **0** |
+| 类型检查 | `npx tsc --noEmit` 通过 |
+
+> 临时数据：为验证往 unit 2 插过 3 行（wordId 234/235/236），**验完已删净**，`UserWordProgress` 回到 24 行、全部属于 unit 1。
+
 ---
 
 ## 7. 提取流水线设计（Python，零依赖）

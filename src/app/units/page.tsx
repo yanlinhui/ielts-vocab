@@ -66,8 +66,14 @@ export default async function UnitsPage() {
                     aria-hidden
                     className="mx-1 flex-1 -translate-y-[0.35em] border-b border-dotted border-[var(--color-line)]"
                   />
-                  <span className="text-xs tabular-nums text-[var(--color-muted)]">
-                    {mastered} / {total}
+                  {/* 「已学」是随时在动的那个数，所以给它正文色；「掌握」要 21 天间隔
+                      才动一次，压成次要色，免得刚学完的人盯着它以为进度没存上。 */}
+                  <span className="shrink-0 whitespace-nowrap text-xs tabular-nums">
+                    <span className="text-[var(--color-ink)]">已学 {started}</span>
+                    <span className="mx-1.5 text-[var(--color-muted)]">·</span>
+                    <span className="text-[var(--color-muted)]">
+                      掌握 {mastered} / {total}
+                    </span>
                   </span>
                 </div>
                 <ProgressBar done={started} total={total} tone={started ? "brand" : "muted"} />
@@ -78,8 +84,8 @@ export default async function UnitsPage() {
       </ul>
 
       <p className="text-xs text-[var(--color-muted)]">
-        进度条表示「开始学过的词占这一章的比例」，右边的数字是「已掌握 / 总词数」。
-        掌握 = 复习间隔已经拉到 21 天以上。
+        「已学」是这一章里已经开过头的词，下面那条进度条和它同指一个数，学一个就涨一个。
+        「掌握」要严得多——复习间隔得拉到 21 天以上才算，所以它涨得慢，刚学完的词一天两天内不会让它动。
       </p>
     </div>
   );
