@@ -21,13 +21,18 @@ import Nav from "./Nav";
 // 「先退出」文字链接。
 const IMMERSIVE = ["/study"];
 
-/** 印章方块 + 书名。纯 div 拼的，不需要任何图片资源。 */
+/**
+ * 印章方块 + 书名。纯 div 拼的，不需要任何图片资源。
+ *
+ * 印章用朱砂不用墨绿——现实里的印就是朱的，绿色方块会一眼看出「这是个
+ * 涂了色的 div」。这也是全站朱砂出现的第一个位置，见 globals.css 的分工注释。
+ */
 function BrandMark() {
   return (
     <span className="flex items-center gap-2">
       <span
         aria-hidden
-        className="grid h-6 w-6 place-items-center rounded-[var(--radius-chip)] bg-[var(--color-brand)] font-serif text-xs leading-none text-[var(--color-canvas)]"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-[var(--radius-chip)] bg-[var(--color-seal)] font-serif text-sm leading-none text-[var(--color-canvas)]"
       >
         真
       </span>
@@ -53,10 +58,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
+      {/* 侧边栏按「书末目录页」做，和 units 页面那套通栏细线 + 发丝线是同一套
+          语言——全站只有一种「目录」的样子。
+
+          右缘那对线是书口的双线：外侧 border-r 一条，内侧 4px 处再一条发丝线，
+          靠 after 伪元素画。aside 是 sticky，本身就是定位元素，absolute 的伪元素
+          以它为参照（绝对的参照是 padding box，所以 right-1 正好落在 border 内 4px）。
+          底色比页面底深一档，内容区是「内页」，侧栏是「封皮区」，两个面分开才立得住。 */}
       {!immersive && (
-        <aside className="hidden border-r border-[var(--color-line)] px-3 py-5 lg:sticky lg:top-0 lg:flex lg:h-dvh lg:w-[220px] lg:shrink-0 lg:flex-col lg:gap-6">
+        <aside className="hidden border-r border-[var(--color-line)] px-4 py-6 after:absolute after:inset-y-0 after:right-1 after:w-px after:bg-[var(--color-line)] after:content-[''] lg:sticky lg:top-0 lg:flex lg:h-dvh lg:w-[220px] lg:shrink-0 lg:flex-col lg:bg-[var(--color-rail)]">
           <BrandMark />
-          <Nav variant="rail" />
+          {/* 「目录」是版式标签，不是内容——不含任何进度信息，和「侧栏不放进度
+              摘要」那条不冲突。标题下压一条通栏细线，导航项之间也是发丝线。 */}
+          <div className="mt-7 flex flex-col">
+            <p className="border-b border-[var(--color-line)] pb-2 text-[11px] tracking-[0.3em] text-[var(--color-muted)]">
+              目录
+            </p>
+            <Nav variant="rail" />
+          </div>
         </aside>
       )}
 

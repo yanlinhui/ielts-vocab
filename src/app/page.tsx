@@ -48,7 +48,8 @@ export default async function HomePage() {
               {stats.newDone} / {stats.newLimit}
             </span>
           </div>
-          <ProgressBar done={stats.newDone} total={stats.newLimit} />
+          {/* 新词那条走朱砂：这是今天刚盖上去的印。复习那条仍是墨绿。 */}
+          <ProgressBar done={stats.newDone} total={stats.newLimit} tone="seal" />
         </div>
 
         <div className="flex flex-col gap-2">
@@ -77,7 +78,13 @@ export default async function HomePage() {
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <Stat label="连续打卡" value={stats.streak > 0 ? `${stats.streak} 天` : "—"} />
+        {/* 打卡数字走朱砂：24px 衬线大字落在卡片面上实测 4.45:1，远超
+            大号字所需的 3:1。没打卡时值是「—」，那就别染红，看着像报错。 */}
+        <Stat
+          label="连续打卡"
+          value={stats.streak > 0 ? `${stats.streak} 天` : "—"}
+          seal={stats.streak > 0}
+        />
         <Stat label="已掌握" value={`${stats.mastered}`} />
         <Stat label="总词数" value={`${stats.totalWords}`} />
       </div>
@@ -106,10 +113,16 @@ export default async function HomePage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, seal = false }: { label: string; value: string; seal?: boolean }) {
   return (
     <div className="rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4 text-center">
-      <div className="font-serif text-2xl font-semibold tabular-nums">{value}</div>
+      <div
+        className={`font-serif text-2xl font-semibold tabular-nums ${
+          seal ? "text-[var(--color-seal)]" : ""
+        }`}
+      >
+        {value}
+      </div>
       <div className="mt-1 text-[11px] tracking-[0.12em] text-[var(--color-muted)]">{label}</div>
     </div>
   );
