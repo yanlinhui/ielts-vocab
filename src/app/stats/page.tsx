@@ -1,8 +1,10 @@
+import Link from "next/link";
 import AccuracyBars from "@/components/AccuracyBars";
 import DailyBars from "@/components/DailyBars";
 import Stat from "@/components/Stat";
 import StateBar from "@/components/StateBar";
 import {
+  FORGETFUL_LIMIT,
   getDailyStats,
   getForgetfulWords,
   getStateBreakdown,
@@ -17,8 +19,6 @@ export const dynamic = "force-dynamic";
  * 会糊成一片；30 列约 11px/列，和热力图的方格同档，也放得下首中尾三个日期刻度。
  */
 const WINDOW_DAYS = 30;
-/** 「老忘的词」列多少个 */
-const FORGETFUL_LIMIT = 20;
 
 /**
  * 研习统计。四页里唯一一个**纯回头看**的页面——不产生任何待办，也不写库。
@@ -66,10 +66,12 @@ export default async function StatsPage() {
 }
 
 /**
- * 老忘的词。**只读，不给跳转**——把一批老忘的词集中攻克需要一个「单词级队列」，
- * 而 `buildSession` 现在只有「每日动线」和「整章专项」两种，加这一种正是阶段三里
- * 「错词本」那一项的核心。现在做会和它重复，做两遍还要改两次。等做错词本时给
- * `buildSession` 加一次 `wordIds` 过滤，两处共用。
+ * 老忘的词。**这一栏只负责「看」，练的入口是底下那条链接**——点进去是
+ * `/study?weak=1`，学习页把这里的同一份名单（`getForgetfulWords`，同一个
+ * `FORGETFUL_LIMIT`）摘成 `wordId` 列表交给 `buildSession({ wordIds })`。
+ *
+ * 排序口径只此一份，**别在这里另写一套「只列还没掌握的」之类的过滤**：错词本
+ * 照搬的就是这一栏的顺序，两处一旦不一样，页面上显示的和点进去练的就对不上。
  */
 function ForgetfulList({ words }: { words: ForgetfulWord[] }) {
   return (
@@ -88,32 +90,59 @@ function ForgetfulList({ words }: { words: ForgetfulWord[] }) {
           还没有答「忘了」的词，这一栏是空的。
         </p>
       ) : (
-        <ul className="mt-3 border-t border-[var(--color-line)]">
-          {words.map((w) => (
-            <li key={w.wordId} className="border-b border-[var(--color-line)] py-2.5 last:border-b-0">
-              <div className="flex items-baseline gap-3">
-                <span className="shrink-0 font-serif font-medium">{w.headword}</span>
-                {/* 释义长短差得很多，让它独自伸缩、截断了也不会挤到右边的数字 */}
-                <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-muted)]">
-                  {w.meaningCn}
-                </span>
-                <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-[var(--color-muted)]">
-                  <span className="text-[var(--color-seal)]">忘 {w.forgets}</span>
-                  <span className="mx-1.5">·</span>
-                  共 {w.answers}
-                </span>
-              </div>
-              <p className="mt-0.5 text-[10px] tracking-[0.06em] text-[var(--color-muted)]">
-                Chapter {w.unitNo} {w.unitName}
-              </p>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="mt-3 border-t border-[var(--color-line)]">
+            {words.map((w) => (
+              <li key={w.wordId} className="border-b border-[var(--color-line)] py-2.5 last:border-b-0">
+                <div className="flex items-baseline gap-3">
+                  <span className="shrink-0 font-serif font-medium">{w.headword}</span>
+                  {/* 释义长短差得很多，让它独自伸缩、截断了也不会挤到右边的数字 */}
+                  <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-muted)]">
+                    {w.meaningCn}
+                  </span>
+                  <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-[var(--color-muted)]">
+                    <span className="text-[var(--color-seal)]">忘 {w.forgets}</span>
+                    <span className="mx-1.5">·</span>
+                    共 {w.answers}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[10px] tracking-[0.06em] text-[var(--color-muted)]">
+                  Chapter {w.unitNo} {w.unitName}
+                </p>
+              </li>
+            ))}
+          </ul>
+
+          {/* 整批练，不做单行跳转：这一栏要解决的是「攒了一批想一起过一遍」 */}
+          <Link
+            href="/study?weak=1"
+            className="mt-3 inline-flex items-center gap-1.5 text-sm text-[var(--color-brand)] transition hover:underline"
+          >
+            集中攻克这 {words.length} 个
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.6}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+              className="h-3.5 w-3.5 shrink-0"
+            >
+              <path d="M6 3.5 10.5 8 6 12.5" />
+            </svg>
+          </Link>
+        </>
       )}
 
       <p className="mt-3 text-xs text-[var(--color-muted)]">
-        「忘」是答「忘了」的次数，「共」是这个词一共答过几次。这一栏现在只列出来，
-        还不能点进去集中练——那是「错词本」的活，还没做。
+        「忘」是答「忘了」的次数，「共」是这个词一共答过几次。
+        {words.length > 0 && (
+          <>
+            上面那条链接会把这 {words.length} 个词单独拎出来练一轮，不占今天的「今日功课」
+            配额。已经掌握的词也在里面——这一栏看的是历史上忘过多少次，不看现在还记不记得。
+          </>
+        )}
       </p>
     </section>
   );

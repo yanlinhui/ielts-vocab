@@ -327,6 +327,15 @@ export interface ForgetfulWord {
 }
 
 /**
+ * 「老忘的词」取多少个。
+ *
+ * **统计页和错词本共用这一个数**：统计页列前 N 个，错词本练的也是同一批
+ * （`/study?weak=1` 把这个数喂给 `buildSession` 的 `wordIds`）。两处各写各的
+ * 一定会分叉——统计页列了 20 个、点进去只练到 15 个，且没有任何地方会报错。
+ */
+export const FORGETFUL_LIMIT = 20;
+
+/**
  * 「老忘的词」：答「忘了」次数最多的前 `limit` 个。
  *
  * **口径是 `ReviewLog` 里 `rating === 1` 的次数，不是 `UserWordProgress.lapses`。**
@@ -341,7 +350,7 @@ export interface ForgetfulWord {
  */
 export async function getForgetfulWords(
   userId: number,
-  limit = 20,
+  limit = FORGETFUL_LIMIT,
 ): Promise<ForgetfulWord[]> {
   const groups = await prisma.reviewLog.groupBy({
     by: ["wordId", "rating"],

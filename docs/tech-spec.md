@@ -387,7 +387,7 @@ export function cardToRow(card: Card): CardRow    // 喂给 previewIntervals
 // lib/session.ts —— 管「今天该看哪些词」
 export async function buildSession(
   userId: number,
-  opts?: { unitId?: number; newLimit?: number }
+  opts?: { unitId?: number; newLimit?: number; wordIds?: number[] }
 ): Promise<QueueItem[]>
 
 export async function getTodayStats(userId: number): Promise<TodayStats>
@@ -396,6 +396,8 @@ export async function getTodayStats(userId: number): Promise<TodayStats>
 `QueueItem` 里除了词条内容，还带 `isNew` 和 `previews`（四档到期时间的 ISO 串）——**到期时间在服务端算好一次性下发**，客户端点翻面时不必再问一次接口。
 
 ⚠️ `opts.unitId` **不只是个过滤条件**：带上它，整个取数逻辑就换成「章节专项」那条路（该章里**还没学过**的词、不套每日配额），见 6.1。
+
+⚠️ `opts.wordIds` 同理，换上「错词本」那条路（只练点名的这些词、按名单顺序、不套配额也不看到期），见 6.2。两个参数同时给时 **`unitId` 先判、`weak` 让位**——`/study?unit=3&weak=1` 走章节。`wordIds: []` 是 truthy，会正常走进错词本分支并返回空队列，正是「错词本是空的」那个空态，不需要特判。
 
 ### 5.3 内部实现要点
 
@@ -664,10 +666,10 @@ english[0]                                                     // 在线任意�
 ## 6. 会话队列逻辑（`lib/session.ts`）
 
 ```ts
-async function buildSession(userId, opts): Promise<QueueItem[]>
+async function buildSession(userId, opts): Promise<QueueItem[]
 ```
 
-**队列构成与顺序**（**只适用于每日动线**，章节专项走 6.1）：
+**队列构成与顺序**（**只适用于每日动线**；章节专项走 6.1、错词本走 6.2）：
 
 ```
 1. 取所有 dueAt <= now 且 state != New 的复习词   ← 优先！旧词不复习会滚雪球
@@ -719,7 +721,7 @@ export function hasIeltsTag(tags: string | null | undefined): boolean {
 
 ### 6.1 两条队列：每日动线 vs 章节专项（2026-10-16 两次修正）
 
-`buildSession` 的第一行就分岔：带 `unitId` 走 `buildUnitSession`，不带则走上面那套每日规则。
+`buildSession` 的**前两行**就分岔：带 `unitId` 走 `buildUnitSession`、带 `wordIds` 走 `buildWordListSession`（见 6.2），两个都不带才走上面那套每日规则。
 
 | | 每日队列（`/study`） | 章节专项（`/study?unit=N`） |
 |---|---|---|
@@ -771,7 +773,80 @@ where: { unitId, progress: { none: { userId } } }
 
 > ⚠️ **验的时候踩了一个坑**：预览面板被收起时 `innerWidth/innerHeight` 是 `0x0`，`WordCard` 那个量高度写进内联样式的 effect 会量到废值并把它留在 DOM 上——当时读到 `.flip-scene` 高 **758px**，看着像锁高坏了。**先 `preview_resize` 定好视口、再 `reload` 重跑 effect，读数才是真的**（重载后是 320px）。
 
-### 6.2 「已学」与「已掌握」两个口径（2026-10-16）
+### 6.2 队列三：错词本（`/study?weak=1`，2026-10-16）
+
+**这一项不是新设计，是把预留的接口接通。** `buildSession` 原先只认「每日动线」和「章节专项」两种模式；`/stats` 的「老忘的词」那一栏当初是**刻意**做成只读、不给跳转的（13.9 记的「不做错词本」），就是等这一步——给 `buildSession` 加一次 `wordIds` 过滤，两处共用同一套排序。实现下来确实是这个形状：`src/lib/session.ts` 只多了一个可选字段、一行分岔、一个新函数。
+
+| | 错词本（`/study?weak=1`） |
+|---|---|
+| 取词范围 | **调用方点名的那些 `wordId`**，一个不多一个不少 |
+| 顺序 | **名单顺序**（不是书序，也不是到期时间） |
+| 卡片状态 | **真实进度行**（`isNew: false`） |
+| 每日新词 / 复习上限 | **不适用** |
+| 到期筛选 | **不适用** |
+| 查询数 | 一条（`userId` + `wordId in (...)`） |
+
+#### 三处和每日动线不同，都是刻意的
+
+1. **发真实进度行的卡，不是空卡。** 能进「老忘的词」就必须有 `ReviewLog`，有日志就有进度行，所以这些词一律不是新词。这里若像章节专项那样发 `emptyCard()`，FSRS 会拿一张全新的卡去排一个**已经在复习态**的词——稳定度、间隔、遗忘次数全部从头算。测试第 3 条守的就是这个：造一张稳定度 60 天的卡，断言评「一般」的间隔 > 3 天（空卡会落在 10 分钟的学习步长里）。
+2. **不套每日配额、不按 `dueAt` 筛。** 理由和章节专项逐字相同（见 6.1）：配额和到期是**首页动线**「每天固定喂一点、别让复习堆雪球」的规则；用户主动点「集中攻克」，要的是一次把这些词过完，它们今天到没到期都不该拦着。注意 `buildWordListSession` 里**根本没有读 `userSettings` 那一步**，所以「把 `dailyNewLimit` 设成 0 也不影响错词本」是结构上成立的，不靠实测。
+3. **按传入顺序排。** `orderInUnit` 在这里没有意义——名单顺序本身携带信息：忘得最多的排最前，这正是「集中攻克」想先解决的。
+
+#### ⚠️ 「只给名单里的词」和「按名单顺序」由两处各管一半
+
+```ts
+const rows = await prisma.userWordProgress.findMany({
+  where: { userId, wordId: { in: wordIds } },   // ← 收窄取回的行
+  include: { word: { include: { unit: true, examples: true } } },
+});
+const byId = new Map(rows.map((r) => [r.wordId, r]));
+
+return wordIds.flatMap((id) => {                // ← 决定顺序，并再兜一次集合
+  const row = byId.get(id);
+  return row ? [toQueueItem(row.word, row, false)] : [];
+});
+```
+
+- `where` 里的 `wordId: { in: wordIds }` 收窄取回来的行（顺带别把整张进度表拉回来），走 `@@unique([userId, wordId])`，**不新增索引**；
+- 最后那次 `wordIds.flatMap` 决定**顺序**，同时再兜一次集合。
+
+**变异检查实测过，两条不能互相替代**：单独去掉 `where`、结果不变（`flatMap` 兜住了）；单独把 `flatMap` 换成 `rows.map`、集合仍对（`where` 兜住了）但**顺序塌回数据库给的 id 序**。也就是说「名单外的一个都不出现」有两条防线，而**顺序只有 `flatMap` 保得住**。`flatMap` 顺带跳过没有进度行的 id——名单和库对不上时最多少练一个词，不会整页 500。
+
+#### 「前 20」这个数归位到 `lib/stats.ts`
+
+`FORGETFUL_LIMIT` 原先写死在 `src/app/stats/page.tsx`。两处共用一个 20 却各写各的，改一处就会**静默分叉**——统计页列了 20 个、点进去只练到 15 个，且没有任何地方会报错。这正是 `session.ts` 的 `isMastered()` 那段注释批评过的「手抄副本」。现在 `stats.ts` 导出 `FORGETFUL_LIMIT`、`getForgetfulWords` 的默认值也是它，统计页和错词本都从这里取。
+
+#### 入口两处，导航**不加第五项**
+
+| 入口 | 位置 |
+|---|---|
+| 统计页「老忘的词」底部 | 「集中攻克这 N 个」→ `/study?weak=1` |
+| 学习页「今天没有待学的词」空态 | 按钮行下面的文字链接「去错词本攻克老忘的词」 |
+
+**不做成导航项是算出来的，不是省事**：`Nav.tsx` 的宽度预算里每项 68px、项间 2px、印章 40 + 品牌间隙 4，四项 = 322px，375px（可用 343）余 21px。**加第五项 = 392px、溢出 49px**；连 320px 的兜底（`max-[359px]:hidden`，只省 44px）都会失效——省完仍差 60px。
+
+第二条入口做成**文字链接而不是第三个按钮**：那一态已经有「回首页」+「浏览章节词汇」两个按钮，各约 116px，375px 下可用 343px，硬塞第三个会换行。
+
+**侧栏归属**：`/study?weak=1` 亮「研习统计」（从统计页进的），与 `/study?unit=N` 亮「章节词汇」同类。`Nav.tsx` 必须读 search params——query 不在 pathname 里，光看 pathname 分不出三种进法（11.13 和该文件的注释都记过这个 bug 家族）。**`unit` 和 `weak` 的优先级在 `study/page.tsx` 与 `Nav.tsx` 两处必须判得一模一样**，否则 `?unit=3&weak=1` 会页面走章节、高亮却亮「研习统计」。`pending` 那个 effect 的依赖数组也要带上这两个参数：`/study?unit=3` 和 `/study?weak=1` 之间前进后退时 pathname 一次都没变，只盯 pathname 的话高亮永远留在旧项上。
+
+#### 验证（2026-10-16）
+
+| 项 | 结果 |
+|---|---|
+| 统计页底部入口 | 「集中攻克这 7 个」→ `/study?weak=1` |
+| 错词本队列 | 头部「错词本 · 第 1 章 自然地理」、还剩 7 个；RSC 负载里的 7 个 headword 与统计页那 7 行**逐个同序**（lithosphere → calamity → jeopardise → horizon → pebble → ore → mineral） |
+| 侧栏归属 | `/study?weak=1` 下两套导航（bar + rail）的「研习统计」都拿到 `aria-current="page"` |
+| `?unit=3&weak=1` | 走章节（拿到第 3 章整章 biologist / zoologist…），侧栏亮「章节词汇」，**页面与高亮一致** |
+| 每日动线回归 | `/study` 仍是「复习 · 第 1 章 自然地理」+ 5 个到期词，与改前一致 |
+| 375×812 横向溢出 | `/stats`、`/study`、`/study?weak=1` 三页均 **0**；导航 278px（与预算一致）；统计页入口链接 left 16 / right 135 |
+| 单元测试 | `npm test` **48 条全绿**（原 41 + 新增 7），`npx tsc --noEmit` 退出码 0 |
+| `dev.db` 指纹 | 测试与实景走查前后**逐位一致**（1617920 字节 / md5 `644229447fcbb0249a48de748c2b237a`） |
+
+**没验到的两条**：「错词本进门就空」和「每日动线空态里的错词本链接」都需要**空队列**才渲染，而库里此刻有 5 个到期复习词、7 个老忘的词，触发不了；清空它们要动用户的实时学习数据（删日志 / 改配额），代价不划算。两条的判据都在代码里且是纯逻辑——空态分支 `weakDone = rated === 0 && weak`、链接条件 `rated === 0 && !chapterDone && !weak`，再加测试第 7 条（`wordIds: []` → 空队列）兜着。
+
+> ⚠️ **走查时踩的坑：`next dev` 会累积成坏状态。** 连续十来次硬导航 + 反复 HMR 之后，**所有页面**（含与本次改动无关的首页）都停在 `app/loading.tsx` 的骨架屏上，`<main>` 的 HTML 一直是 `<!--$~--><template id="B:0">` + 骨架，控制台无错、dev overlay 无内容、服务端 `curl` 同一 URL 却是完整 HTML（167 KiB，含 `hidden id="S:0"`）。**重启 dev server 立刻恢复。** 判断依据是**首页也坏了**——本次改动碰不到首页，代码问题不会那样。下次再遇到「页面卡骨架」，先重启再怀疑代码。
+
+### 6.3 「已学」与「已掌握」两个口径（2026-10-16）
 
 **起因**：用户报「章节词汇学习完之后，更新的进度没有能及时更新至章节词汇这个页面」。查完的结论是——**进度一行没丢，是那个数字的口径和直觉对不上**。
 
@@ -1192,6 +1267,8 @@ n. 宿舍            →  5 n. 宿舍
 ### 8.1 为什么逾期了才发现
 
 阶段三的粘连修复、热力图、统计页都做完之后才还上，原因是**后两项任务开始变得危险**：拼写/听写模式要动 `StudySession`，错词本要动 `buildSession`，两处都落在核心学习链路上。而 `buildSession` 的章节专项分支在 **2026-10-16 连着修了两轮**（先「点某一章只练那一章」实际变成「今天要背的那几个词恰好在这一章」，后「学过的词也在队列里、每次从头重排」），两次都是用户报错才发现的。有测试网兜着，这类回归自己就会红。
+
+**2026-10-16 兑现了一半**：错词本正是「要动 `buildSession`」的那一类，落地时新增 7 条测试把它锁住（`describe("buildSession —— 错词本")`），变异检查确认三条**互相隔离**的信号——顺序 → 第 2 条、`isNew` → 第 3 条、到期筛选 → 第 4 条（详见 6.2 和 8.6）。拼写/听写模式还没做。
 
 ### 8.2 怎么做到零新依赖
 
@@ -2169,6 +2246,6 @@ PRD 2.5 原写「正确率曲线 · 折线图」。复核下来折线在这个�
 - **不动首页热力图**（PRD 2.5 已写明统计页不做这一块）
 - **不动 `session.ts` 的队列逻辑**（除了把 `isMastered` 改成导出）
 - **不建 API 路由、不引任何依赖、不新增颜色 / 圆角令牌**
-- **不做单词级队列、不做错词本**——「老忘的词」那一栏只读、不给跳转，把一批词集中攻克留给错词本（届时给 `buildSession` 加一次 `wordIds` 过滤，两处共用同一套排序）
+- ~~不做单词级队列、不做错词本~~ ✅ **2026-10-16 错词本已做**（见 6.2）。「老忘的词」那一栏仍然是**盘点用、每行不给单独跳转**，但底部多了一条「集中攻克这 N 个」→ `/study?weak=1`。**逐词跳转仍然不做**——要的是「一批集中攻克」，不是一个个点进去
 - **不做导出 / 分享**
 

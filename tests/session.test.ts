@@ -303,6 +303,132 @@ describe("buildSession —— 章节专项", () => {
   });
 });
 
+describe("buildSession —— 错词本", () => {
+  before(() => {
+    ensureTestDb();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  /**
+   * 一章 N 个词，每个都塞一张进度行。
+   *
+   * 这里**不写 `ReviewLog`**：`buildSession({ wordIds })` 不读日志，名单是调用方
+   * （学习页，问 `getForgetfulWords` 要的）算好传进来的。日志口径归 `stats.ts` 管。
+   *
+   * `withProgress: false` 是给需要自己捏一张特定形状的卡的用例留的——`(userId, wordId)`
+   * 上有唯一约束，建两次会炸。
+   */
+  async function seed(
+    words: number,
+    opts: { newLimit?: number; withProgress?: boolean } = {},
+  ) {
+    const userId = await makeUser();
+    const unitId = await makeUnit(1);
+    await makeSettings(userId, opts.newLimit ?? 20, 200);
+    const wordIds: number[] = [];
+    for (let i = 1; i <= words; i++) wordIds.push(await makeWord(unitId, i));
+    if (opts.withProgress !== false) {
+      for (const id of wordIds) await makeProgress(userId, id);
+    }
+    return { userId, unitId, wordIds };
+  }
+
+  it("只给名单里的词，名单外的一个都不出现", async () => {
+    const { userId, wordIds } = await seed(5);
+    const picked = [wordIds[1], wordIds[3]];
+
+    const queue = await buildSession(userId, { wordIds: picked });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId).sort((a, b) => a - b),
+      [...picked].sort((a, b) => a - b),
+      "过滤没接上的话，另外三个没点名的词也会混进来",
+    );
+  });
+
+  it("按传入顺序出队，不是按书里的 orderInUnit", async () => {
+    const { userId, wordIds } = await seed(3);
+    // 故意传一个和书序相反的名单：书序是 [0,1,2]，这里要 [2,0,1]
+    const picked = [wordIds[2], wordIds[0], wordIds[1]];
+
+    const queue = await buildSession(userId, { wordIds: picked });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId),
+      picked,
+      "名单顺序带着「忘得最多的排最前」，不能被 orderInUnit 覆盖掉",
+    );
+  });
+
+  it("发的是真实进度行的卡，不是空卡——全部 isNew:false", async () => {
+    const { userId, wordIds } = await seed(2, { withProgress: false });
+    // 一张已经进复习态、稳定度 60 天的卡：空卡和它的预览间隔差着好几个数量级。
+    // ⚠️ `dueAt` 故意设在**过去**——这条测的是「发的是不是真卡」，别让它顺带
+    // 也去测到期筛选（那是下面那条的活），否则两条会一起红，分不清是哪儿坏的。
+    await makeProgress(userId, wordIds[0], {
+      state: "review",
+      scheduledDays: 60,
+      stability: 60,
+      difficulty: 5,
+      reps: 9,
+      dueAt: daysAgo(1),
+      lastReviewAt: daysAgo(2),
+    });
+
+    const queue = await buildSession(userId, { wordIds: [wordIds[0]] });
+    const card = queue[0];
+
+    assert.equal(card.isNew, false);
+    // 空卡评「一般」落在学习步长里（10 分钟）；稳定度 60 天的复习卡不可能还在分钟级。
+    // 这条红了就说明发的是 emptyCard()，FSRS 会把一个在复习态的词从头排。
+    const good = new Date(card.previews[3]).getTime();
+    assert.ok(
+      good - Date.now() > 3 * 86_400_000,
+      `评「一般」的间隔只有 ${Math.round((good - Date.now()) / 60_000)} 分钟，是空卡的形状`,
+    );
+  });
+
+  it("到期时间在未来的词也照给——错词本不看到期", async () => {
+    const { userId, wordIds } = await seed(2, { withProgress: false });
+    await makeProgress(userId, wordIds[0], { dueAt: daysAgo(-10) });
+
+    const queue = await buildSession(userId, { wordIds: [wordIds[0]] });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId),
+      [wordIds[0]],
+      "加了 dueAt 筛选的话，恰恰会把「还不到期但老忘」的词筛掉",
+    );
+  });
+
+  it("不套每日配额：上限 1 也照样给全名单", async () => {
+    const { userId, wordIds } = await seed(3, { newLimit: 1 });
+
+    const queue = await buildSession(userId, { wordIds });
+
+    assert.equal(queue.length, 3, "错词本和章节专项一样，不受每日新词上限约束");
+  });
+
+  it("名单里混进没有进度行的 id：跳过它、其余照给，不抛", async () => {
+    const { userId, wordIds } = await seed(2);
+    const ghost = 999_999;
+
+    const queue = await buildSession(userId, { wordIds: [wordIds[0], ghost, wordIds[1]] });
+
+    assert.deepEqual(queue.map((q) => q.wordId), [wordIds[0], wordIds[1]]);
+  });
+
+  it("空名单给空队列——错词本页面靠它显示「错词本现在是空的」", async () => {
+    const { userId } = await seed(2);
+
+    // `[]` 是 truthy，所以走的是错词本分支、而不是掉回每日动线
+    assert.equal((await buildSession(userId, { wordIds: [] })).length, 0);
+  });
+});
+
 describe("getTodayStats", () => {
   before(() => {
     ensureTestDb();

@@ -111,24 +111,34 @@ const NAV = [
 
 export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
   const pathname = usePathname();
-  const unitParam = useSearchParams().get("unit");
+  const searchParams = useSearchParams();
+  const unitParam = searchParams.get("unit");
+  const weakParam = searchParams.get("weak");
   const rail = variant === "rail";
 
-  // 当前页。学习页自己没有导航项，归属看**是打哪儿进来的**——两个入口：
+  // 当前页。学习页自己没有导航项，归属看**是打哪儿进来的**——三个入口：
   // - 首页「开始」按钮 → `/study`（不带参数）  → 算「今日功课」
   //   这一页是首页那条动线的进行状态，不是并列的第四个板块
   // - 章节词汇点某一章 → `/study?unit=N`       → 算「章节词汇」
+  // - 统计页点「集中攻克」 → `/study?weak=1`   → 算「研习统计」
   //
-  // ⚠️ 必须读 search params，光看 pathname 分不出这两种——query 不在 pathname 里。
+  // ⚠️ 必须读 search params，光看 pathname 分不出这三种——query 不在 pathname 里。
   // 一开始只判了 pathname、把整个 `/study` 都算给「今日功课」，于是从章节进来的
-  // 学习页也亮「今日功课」，是个实打实的误导（2026-10-16 用户报的）。
+  // 学习页也亮「今日功课」，是个实打实的误导（2026-10-16 用户报的）。错词本同理：
+  // 从统计页进来却亮「今日功课」，会让人以为刚才点的是首页那个「开始」。
   //
-  // 用 `useSearchParams` 是安全的：四个页面全是 `force-dynamic`，没有静态预渲染，
+  // ⚠️ 两个参数的优先级要和 `study/page.tsx` 里那条分岔**判得一模一样**：那边是
+  // `unit` 压过 `weak`，这里也必须是 `unit` 先判，否则 `?unit=3&weak=1` 时页面按
+  // 章节走、高亮却亮「研习统计」。
+  //
+  // 用 `useSearchParams` 是安全的：五个页面全是 `force-dynamic`，没有静态预渲染，
   // 不会触发 CSR bailout（那才是需要 Suspense 边界的场景）。
   const current = pathname.startsWith("/study")
     ? unitParam
       ? "/units"
-      : "/"
+      : weakParam
+        ? "/stats"
+        : "/"
     : pathname;
 
   // 点击后**立刻**把高亮挪到目标项，不等新页面数据回来。
@@ -143,13 +153,14 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
   // ⚠️ 这不是 dev 特有的：dev 只是把服务端往返拖长了，正式构建下同样存在这一段，
   // 只是短到几乎看不见。所以这条改动在哪个模式下都成立。
   //
-  // 换 unit 参数也算「变了」：从 `/study?unit=3` 到 `/study?unit=7` 走的是同一段
-  // 路径，只盯 pathname 的话 pending 永远清不掉。
+  // 换 unit / weak 参数也算「变了」：从 `/study?unit=3` 到 `/study?unit=7` 走的是
+  // 同一段路径，只盯 pathname 的话 pending 永远清不掉。错词本同理——浏览器前进后
+  // 退在 `/study?unit=3` 和 `/study?weak=1` 之间来回时，pathname 一次都没变。
   //
   // ⚠️ `pending` 只用来**上色**，不用来写 `aria-current`（见下面 active / lit 两行）。
   // 页面其实还没到，就把新项标成「当前页」，读屏软件会提前念错。
   const [pending, setPending] = useState<string | null>(null);
-  useEffect(() => setPending(null), [pathname, unitParam]);
+  useEffect(() => setPending(null), [pathname, unitParam, weakParam]);
 
   return (
     <nav className={rail ? "flex flex-col" : "flex items-center gap-0.5"}>

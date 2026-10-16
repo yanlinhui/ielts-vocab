@@ -173,6 +173,8 @@ export interface BuildSessionOptions {
   unitId?: number;
   /** 覆写今日新词上限，用于「额外加练」 */
   newLimit?: number;
+  /** 只练给定的这些词，按数组顺序出队（错词本模式） */
+  wordIds?: number[];
 }
 
 export async function buildSession(
@@ -181,6 +183,8 @@ export async function buildSession(
 ): Promise<QueueItem[]> {
   // 章节专项走另一条路：整章给全，不碰每日配额
   if (opts.unitId) return buildUnitSession(userId, opts.unitId);
+  // 错词本同理：名单由调用方给定，不碰配额、不看到期
+  if (opts.wordIds) return buildWordListSession(userId, opts.wordIds);
 
   const now = new Date();
   const settings = await prisma.userSettings.findUnique({ where: { userId } });
@@ -268,6 +272,50 @@ async function buildUnitSession(userId: number, unitId: number): Promise<QueueIt
 
   // 取出来的一律是没学过的词，所以都是空卡——和每日动线里对「新词」的处理一致。
   return words.map((w) => toQueueItem(w, emptyCard(), true));
+}
+
+/**
+ * 错词本：只练调用方点名的那些词，按名单顺序出队。
+ *
+ * 名单来自统计页那份「老忘的词」（`getForgetfulWords`，按 `ReviewLog` 里
+ * `rating === 1` 的次数降序），**两处共用同一套排序**，页面只负责把 `wordId`
+ * 摘出来传进来——排序口径只此一份，不在这里重新发明。
+ *
+ * 三处和每日动线不同，都是刻意的：
+ *
+ * 1. **发真实进度行的卡，不是空卡**（`toQueueItem(row.word, row, false)`）。
+ *    能进「老忘的词」就必须有 `ReviewLog`，有日志就有进度行，所以这些词一律
+ *    不是新词。这里若像章节专项那样发 `emptyCard()`，FSRS 会拿一张全新的卡去排
+ *    一个已经在复习态的词——稳定度、间隔、遗忘次数全部从头算。
+ *
+ * 2. **不套每日配额、也不按 `dueAt` 筛。** 理由和章节专项一样（见上面那段）：
+ *    配额和到期是**首页动线**「每天固定喂一点、别让复习堆积」的规则；用户主动
+ *    点「集中攻克」，要的是一次把这些词过完，它们今天到没到期都不该拦着。
+ *
+ * 3. **按传入顺序排，不按书名序。** `orderInUnit` 在这里没有意义——名单顺序
+ *    本身携带信息：忘得最多的排最前，这正是「集中攻克」想先解决的。
+ *
+ * ⚠️ 「只给名单里的词」和「按名单顺序」这两件事由**两处各管一半**，别只留一处：
+ * - `where` 里的 `wordId: { in: wordIds }` 收窄取回来的行（顺带别把整张进度表拉回来），
+ *   走 `@@unique([userId, wordId])`，不新增索引；
+ * - 最后那次 `wordIds.flatMap` 决定**顺序**，同时再兜一次集合。
+ *
+ * 实测过：单独去掉 `where`、结果不变（`flatMap` 兜住了）；单独换成 `rows.map`、
+ * 集合仍对（`where` 兜住了）但顺序塌回数据库给的 id 序。**顺序只有 `flatMap` 保得住。**
+ *
+ * `flatMap` 顺带跳过没有进度行的 id——名单和库对不上时，最多少练一个词，不会整页崩。
+ */
+async function buildWordListSession(userId: number, wordIds: number[]): Promise<QueueItem[]> {
+  const rows = await prisma.userWordProgress.findMany({
+    where: { userId, wordId: { in: wordIds } },
+    include: { word: { include: { unit: true, examples: true } } },
+  });
+  const byId = new Map(rows.map((r) => [r.wordId, r]));
+
+  return wordIds.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [toQueueItem(row.word, row, false)] : [];
+  });
 }
 
 type WordWithRelations = {

@@ -27,6 +27,7 @@ export default function StudySession({
   accent,
   initialAutoSpeak = false,
   unit = null,
+  weak = false,
 }: {
   initialQueue: QueueItem[];
   accent: Accent;
@@ -36,6 +37,12 @@ export default function StudySession({
    * 队列里一个词都没有，没有词卡可以读出章名，只能靠这里传。每日动线传 null。
    */
   unit?: { chapterNo: number; name: string } | null;
+  /**
+   * 错词本（`/study?weak=1`）进来时置真。**只影响文字，不影响队列怎么消费**——
+   * 队列由 `buildSession({ wordIds })` 建好，这里只管把「现在是错词本」这件事
+   * 在第一行说出来，以及进门就空时给对诊断。
+   */
+  weak?: boolean;
 }) {
   const [queue, setQueue] = useState<QueueItem[]>(initialQueue);
   const [rated, setRated] = useState(0);
@@ -111,47 +118,80 @@ export default function StudySession({
   }, [autoSpeak]);
 
   if (queue.length === 0) {
-    // 三种空法要分清，别混成一句：
-    //   1. 章节专项进门就空 —— 这一章的词都已经学过了（一次都还没答）
-    //   2. 答过若干之后抽干 —— 本轮做完
-    //   3. 每日动线进门就空 —— 今天没有待办的词
+    // 四种空法要分清，别混成一句：
+    //   1. 错词本进门就空 —— 一个「忘了」都还没答过
+    //   2. 章节专项进门就空 —— 这一章的词都已经学过了（一次都还没答）
+    //   3. 答过若干之后抽干 —— 本轮做完（三种进法共用这一支）
+    //   4. 每日动线进门就空 —— 今天没有待办的词
+    //
+    // ⚠️ 判定顺序不能反：`weakDone` 要排在最后一支前面。反了的话，从错词本进来
+    // 会读到「今天没有待学的词了」——在这儿那是句错的诊断，会让人以为今天配额用光了。
     const chapterDone = rated === 0 && unit !== null;
+    const weakDone = rated === 0 && weak;
     const rate = rated > 0 ? Math.round((remembered / rated) * 100) : 0;
+
+    // 四支的差别只有「说什么」和「下一步去哪」，所以先算成一份数据再渲染——
+    // 照原来的写法再嵌一层三元，这段就没法读了。
+    let title: string;
+    let body: string;
+    let primary: { href: string; label: string };
+    let secondary: { href: string; label: string };
+
+    if (weakDone) {
+      title = "错词本现在是空的";
+      body = "还没有答过「忘了」的词。等攒够了再来集中攻克。";
+      primary = { href: "/stats", label: "看研习统计" };
+      secondary = { href: "/", label: "回首页" };
+    } else if (chapterDone) {
+      title = `第 ${unit?.chapterNo} 章 ${unit?.name} 已经学完`;
+      body = "这一章的词都学过了。想回顾的话回首页——这一章的复习按到期时间在「今日功课」里走。";
+      primary = { href: "/units", label: "浏览章节词汇" };
+      secondary = { href: "/", label: "回首页" };
+    } else if (rated > 0) {
+      title = "这一轮完成了";
+      body = `本次作答 ${rated} 次，其中 ${remembered} 次记住了（${rate}%）`;
+      primary = { href: "/", label: "回首页" };
+      secondary = { href: "/units", label: "浏览章节词汇" };
+    } else {
+      title = "这一轮完成了";
+      body = "今天没有待学的词了。去「章节词汇」挑一个章节加练，或明天再来。";
+      primary = { href: "/", label: "回首页" };
+      secondary = { href: "/units", label: "浏览章节词汇" };
+    }
 
     return (
       <div className="flex flex-col items-center gap-4 rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-center">
-        <h1 className="font-serif text-xl font-semibold">
-          {chapterDone ? `第 ${unit?.chapterNo} 章 ${unit?.name} 已经学完` : "这一轮完成了"}
-        </h1>
-        {chapterDone ? (
-          <p className="text-sm text-[var(--color-muted)]">
-            这一章的词都学过了。想回顾的话回首页——这一章的复习按到期时间在「今日功课」里走。
-          </p>
-        ) : rated > 0 ? (
-          <p className="text-sm text-[var(--color-muted)]">
-            本次作答 {rated} 次，其中 {remembered} 次记住了（{rate}%）
-          </p>
-        ) : (
-          <p className="text-sm text-[var(--color-muted)]">
-            今天没有待学的词了。去「章节词汇」挑一个章节加练，或明天再来。
-          </p>
-        )}
+        <h1 className="font-serif text-xl font-semibold">{title}</h1>
+        <p className="text-sm text-[var(--color-muted)]">{body}</p>
         <div className="mt-2 flex gap-3">
           {/* 学完一章的人下一步是挑下一章，所以那一态的主动作是去章节列表；
-              另外两态是「收工」，主动作回首页。 */}
+              另外几态是「收工」，主动作回首页。 */}
           <Link
-            href={chapterDone ? "/units" : "/"}
+            href={primary.href}
             className="rounded-[var(--radius-control)] bg-[var(--color-brand)] px-4 py-2.5 text-sm font-medium text-[var(--color-on-brand)] transition hover:opacity-90"
           >
-            {chapterDone ? "浏览章节词汇" : "回首页"}
+            {primary.label}
           </Link>
           <Link
-            href={chapterDone ? "/" : "/units"}
+            href={secondary.href}
             className="rounded-[var(--radius-control)] border border-[var(--color-line)] px-4 py-2.5 text-sm transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
           >
-            {chapterDone ? "回首页" : "浏览章节词汇"}
+            {secondary.label}
           </Link>
         </div>
+
+        {/* 只有「今天没有待学的词」这一支才给错词本出口——另外三支各自有更该走的
+            路（学完一章 → 挑下一章；做完一轮 → 收工；错词本空 → 回统计页）。
+            ⚠️ 写成按钮行下面的文字链接、不塞进上面那排按钮：上面两个按钮各约 116px，
+            375px 下可用 343px，硬塞第三个会换行。 */}
+        {rated === 0 && !chapterDone && !weak && (
+          <Link
+            href="/study?weak=1"
+            className="text-sm text-[var(--color-brand)] underline underline-offset-4"
+          >
+            去错词本攻克老忘的词
+          </Link>
+        )}
       </div>
     );
   }
@@ -163,7 +203,7 @@ export default function StudySession({
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between text-xs text-[var(--color-muted)]">
           <span>
-            {current.isNew ? "新词" : "复习"} · 第 {current.unitNo} 章 {current.unitName}
+            {weak ? "错词本" : current.isNew ? "新词" : "复习"} · 第 {current.unitNo} 章 {current.unitName}
           </span>
           <span>
             还剩 {queue.length} 个 · 已完成 {rated}
