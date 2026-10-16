@@ -994,6 +994,10 @@ if (opts.wordIds) return buildWordListSession(userId, opts.wordIds);
 
 **注意**：PDF 的 `stream` 关键字后跟 `\r\n` 或 `\n`，`/Length` 也可能写成间接引用（`/Length 12 0 R`）。两种情况都要处理。
 
+> **这份 PDF 里没有音频，也没有文字层（2026-10-16 实测）**：把全书对象表扫一遍，`/Audio` `/Sound` `/Movie` `/RichMedia` `/Rendition` `/EmbeddedFile` `/URI` `/GoToR` **命中全为 0**，只有 **334 个** `/DCTDecode` 图像对象和 **0 个** `/Font`。也就是说这本书**从头到尾只有 334 张图**——没有音轨、没有内嵌音频文件、也没有指向外部音频资源的链接。
+>
+> 这条记下来是因为它**关掉了一个功能**：计划里的「例句音频」原写着「二期再议」，隐含假设是音频在书里；实测推翻这个假设——没有源可提，所以那一项永久关闭，不是往后放。见 `plan.md` 第 2 节。
+
 ### 7.2 `ocr_pages.py`
 
 **为什么需要**：我读不了扫描图（Read 工具返回 `[Unsupported Image]`），PDF 又没有文字层（`/Font` = 0），所以只能本地 OCR。
