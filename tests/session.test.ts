@@ -429,6 +429,124 @@ describe("buildSession —— 错词本", () => {
   });
 });
 
+describe("buildSession —— 拼写", () => {
+  before(() => {
+    ensureTestDb();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  /** 一章 N 个词。进度行由各用例自己按需塞——拼写队列全靠它筛。 */
+  async function seed(words: number, opts: { newLimit?: number } = {}) {
+    const userId = await makeUser();
+    const unitId = await makeUnit(1);
+    await makeSettings(userId, opts.newLimit ?? 20, 200);
+    const wordIds: number[] = [];
+    for (let i = 1; i <= words; i++) wordIds.push(await makeWord(unitId, i));
+    return { userId, unitId, wordIds };
+  }
+
+  it("只给学过的词，没学过的一个都不出现", async () => {
+    const { userId, wordIds } = await seed(5);
+    await makeProgress(userId, wordIds[0]);
+    await makeProgress(userId, wordIds[1]);
+
+    const queue = await buildSession(userId, { spell: true });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId).sort((a, b) => a - b),
+      [wordIds[0], wordIds[1]].sort((a, b) => a - b),
+      "拼写是检验不是初学——没进度行的词混进来，用户第一题就写不出",
+    );
+  });
+
+  it("到期时间在未来的词照给——拼写不看到期", async () => {
+    const { userId, wordIds } = await seed(2);
+    await makeProgress(userId, wordIds[0], { dueAt: daysAgo(-10) });
+
+    const queue = await buildSession(userId, { spell: true });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId),
+      [wordIds[0]],
+      "加了 dueAt 筛选的话，刚学完（dueAt 在几分钟后）的词恰恰会被筛掉",
+    );
+  });
+
+  it("不套每日配额：上限 1 也照样给全", async () => {
+    const { userId, wordIds } = await seed(3, { newLimit: 1 });
+    for (const id of wordIds) await makeProgress(userId, id);
+
+    const queue = await buildSession(userId, { spell: true });
+
+    assert.equal(queue.length, 3, "拼写和章节专项、错词本一样，不受每日新词上限约束");
+  });
+
+  it("发的是真实进度行的卡，不是空卡——全部 isNew:false", async () => {
+    const { userId, wordIds } = await seed(1);
+    await makeProgress(userId, wordIds[0], {
+      state: "review",
+      scheduledDays: 60,
+      stability: 60,
+      difficulty: 5,
+      reps: 9,
+      dueAt: daysAgo(1),
+      lastReviewAt: daysAgo(2),
+    });
+
+    const queue = await buildSession(userId, { spell: true });
+    const card = queue[0];
+
+    assert.equal(card.isNew, false);
+    // 空卡评「一般」落在学习步长里（10 分钟）；稳定度 60 天的复习卡不可能还在分钟级
+    const good = new Date(card.previews[3]).getTime();
+    assert.ok(
+      good - Date.now() > 3 * 86_400_000,
+      `评「一般」的间隔只有 ${Math.round((good - Date.now()) / 60_000)} 分钟，是空卡的形状`,
+    );
+  });
+
+  it("给定 unitId 时只给这一章学过的词", async () => {
+    const userId = await makeUser();
+    const unitA = await makeUnit(1);
+    const unitB = await makeUnit(2);
+    const a = await makeWord(unitA, 1, "a1");
+    const b = await makeWord(unitB, 1, "b1");
+    await makeProgress(userId, a);
+    await makeProgress(userId, b);
+
+    const queue = await buildSession(userId, { spell: true, unitId: unitA });
+
+    // 这条同时守着 buildSession 里那个分岔顺序：spell 若排在 unitId 后面，
+    // 这个调用会被章节专项接走，结果是「第 1 章还没学过的词」——空队列。
+    assert.deepEqual(queue.map((q) => q.wordId), [a], "b1 是第 2 章的，不该出现");
+  });
+
+  it("按 dueAt 升序——刚学完的词因此排在队首", async () => {
+    const { userId, wordIds } = await seed(3);
+    // 故意让 id 序和到期序相反
+    await makeProgress(userId, wordIds[0], { dueAt: daysAgo(-5) });
+    await makeProgress(userId, wordIds[1], { dueAt: daysAgo(-3) });
+    await makeProgress(userId, wordIds[2], { dueAt: daysAgo(-1) });
+
+    const queue = await buildSession(userId, { spell: true });
+
+    assert.deepEqual(
+      queue.map((q) => q.wordId),
+      [wordIds[2], wordIds[1], wordIds[0]],
+      "越早到期的越靠前。学习步长是 1m/10m，所以刚学完那批的 dueAt 最近，自然排在最前",
+    );
+  });
+
+  it("一个词都没学过就给空队列——学习页靠它显示「还没有学过的词」", async () => {
+    const { userId } = await seed(3);
+
+    assert.equal((await buildSession(userId, { spell: true })).length, 0);
+  });
+});
+
 describe("getTodayStats", () => {
   before(() => {
     ensureTestDb();

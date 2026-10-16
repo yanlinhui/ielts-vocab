@@ -1,6 +1,6 @@
 // 会话队列：决定「今天这一轮该看哪些词、按什么顺序」。
 //
-// 有两种队列，分岔在 buildSession 的第一行：
+// 有四种队列，分岔在 buildSession 最前面那几行：
 //
 //   A. 每日队列（`/study`，首页「开始」进来的）——规则来自 PRD 2.1 / 2.2：
 //        1. 先复习到期旧词，再学新词。旧词不复习会越积越多，必须优先
@@ -9,6 +9,15 @@
 //
 //   B. 章节专项（`/study?unit=N`，从章节词汇点某一章进来的）——只给这一章**还没
 //      学过**的词，按书序。上面那三条**一条都不适用**，原因见 buildUnitSession。
+//
+//   C. 错词本（`/study?weak=1`，从统计页「老忘的词」进来的）——只给调用方点名
+//      的那批词，按名单顺序。见 buildWordListSession。
+//
+//   D. 拼写（`/study?spell=1`，从首页或章节页进来的）——只给**学过的**词，可再
+//      按章节收窄。同样不吃每日那三条。见 buildSpellSession。
+//
+// 后三种都是「用户明确点了某一块」，所以一律绕开每日那条动线的配额与到期规则；
+// 分岔顺序也不是随意的，逐条写在 buildSession 里。
 //
 // 队列在进入学习页时算一次。中途刷新页面就重算——已经评过分的词状态变了，
 // 不会重复出现（除非它因为答错被排到几分钟后，那本来就应该再出现）。
@@ -175,12 +184,19 @@ export interface BuildSessionOptions {
   newLimit?: number;
   /** 只练给定的这些词，按数组顺序出队（错词本模式） */
   wordIds?: number[];
+  /** 只练**学过的**词，可配合 `unitId` 收窄到某一章（拼写模式） */
+  spell?: boolean;
 }
 
 export async function buildSession(
   userId: number,
   opts: BuildSessionOptions = {},
 ): Promise<QueueItem[]> {
+  // ⚠️ 分岔的**顺序**是有讲究的，三行不能随意调换：
+  // 拼写排在章节专项前面——因为 `?unit=3&spell=1` 要的是「第 3 章里学过的词」，
+  // 拼写队列得先接住 unitId 再往下走；反过来先判 unitId 的话，那个地址会被
+  // 章节专项吃掉，变成「第 3 章还没学过的词」，和用户点的入口对不上。
+  if (opts.spell) return buildSpellSession(userId, opts.unitId);
   // 章节专项走另一条路：整章给全，不碰每日配额
   if (opts.unitId) return buildUnitSession(userId, opts.unitId);
   // 错词本同理：名单由调用方给定，不碰配额、不看到期
@@ -316,6 +332,50 @@ async function buildWordListSession(userId: number, wordIds: number[]): Promise<
     const row = byId.get(id);
     return row ? [toQueueItem(row.word, row, false)] : [];
   });
+}
+
+/**
+ * 拼写一轮最多出多少题。
+ *
+ * 已学过的词会一路长到几百上千（全书 3580 个），一次全给既不现实也没意义——
+ * 一轮五十题够练，答到哪儿算哪儿，中途退出不丢东西（每答一题就实时落库）。
+ */
+const SPELL_LIMIT = 50;
+
+/**
+ * 拼写队列：只取**学过的**词（有进度行的），可再按章节收窄。
+ *
+ * 拼写是检验，不是初学——对着中文释义默写一个今天第一次见的词，谁也写不出来。
+ * 所以这里不给新词，只给已经开过头的（`UserWordProgress` 里有行），判据就是
+ * 「有没有进度行」，不另看 `state`：学过就是学过，还在 learning 步长里的也该默。
+ *
+ * 三处和每日动线不同，都是刻意的：
+ *
+ * 1. **发真实进度行的卡，不是空卡**（`toQueueItem(r.word, r, false)`）。理由同
+ *    错词本（见 buildWordListSession）：这些词必然有进度行，若发 `emptyCard()`，
+ *    FSRS 会拿一张全新的卡去重排一个已经学过的词。
+ *
+ * 2. **不套每日配额、也不按 `dueAt` 筛。** 同章节专项那条理由：配额和到期是
+ *    **首页那条动线**「每天固定喂一点、别让复习堆积」的规则；用户主动点「拼写
+ *    练习」，想要的是把学过的词过一遍，它们今天到没到期都不该拦着。
+ *
+ * 3. **按 `dueAt` 升序。** 不只是「最该复习的先来」——**刚学完的新词 `dueAt` 就在
+ *    几分钟后**（学习步长 1m / 10m），所以它们天然落在队首，正好接住「学完 20 个
+ *    新词 → 立刻回头默写这 20 个」那条动线。换成按 `lastReviewAt` 升序就接不住：
+ *    刚学的那批 `lastReviewAt` 是「刚刚」，会一路沉到队尾。
+ *
+ * `unitId` 走 `word: { unitId }` 这个关系过滤，配合 `userId` 已有的
+ * `@@index([userId, dueAt])`，不新增索引。
+ */
+async function buildSpellSession(userId: number, unitId?: number): Promise<QueueItem[]> {
+  const rows = await prisma.userWordProgress.findMany({
+    where: { userId, ...(unitId ? { word: { unitId } } : {}) },
+    orderBy: { dueAt: "asc" },
+    take: SPELL_LIMIT,
+    include: { word: { include: { unit: true, examples: true } } },
+  });
+
+  return rows.map((r) => toQueueItem(r.word, r, false));
 }
 
 type WordWithRelations = {

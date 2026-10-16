@@ -89,6 +89,19 @@ export default async function HomePage() {
         >
           {hasTodo ? `开始学习（${todo} 个）` : "额外加练"}
         </Link>
+
+        {/* 拼写练习排在主按钮**下面**、做成文字链接而不是第二个按钮：主按钮是
+            「今天该干的事」，拼写是回头检验学过的东西，主次得分得清（同 PRD 2.1
+            删掉那两个快捷入口的理由）。
+            一个词都没学过就不渲染——那种时候点进去只会撞上一句空态。 */}
+        {stats.started > 0 && (
+          <Link
+            href="/study?spell=1"
+            className="text-center text-sm text-[var(--color-brand)] underline underline-offset-4"
+          >
+            拼写练习（{stats.started} 个学过的词）
+          </Link>
+        )}
       </div>
 
       <div className="grid grid-cols-3 gap-3">

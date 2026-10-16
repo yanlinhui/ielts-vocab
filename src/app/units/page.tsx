@@ -58,7 +58,7 @@ export default async function UnitsPage() {
             >
               <Link
                 href={`/study?unit=${unit.id}`}
-                className="flex flex-col gap-2 px-2 py-3 transition hover:bg-[var(--color-surface-2)]"
+                className="flex flex-col gap-2 px-2 pt-3 pb-1 transition hover:bg-[var(--color-surface-2)]"
               >
                 <div className="flex items-baseline gap-3">
                   <span className="font-serif text-sm tabular-nums text-[var(--color-brand)]">
@@ -81,6 +81,22 @@ export default async function UnitsPage() {
                 </div>
                 <ProgressBar done={started} total={total} tone={started ? "brand" : "muted"} />
               </Link>
+
+              {/* 拼写入口。**不能塞进上面那个 Link 里**——整行已经是一个 `<a>`，
+                  再套一个就是 `<a>` 套 `<a>`，非法 HTML（词卡那边踩过同一个坑，
+                  见 WordCard.tsx 里「不能用 button 套 button」那条注释）。所以它
+                  是 `<li>` 里的兄弟节点，那一行目录的版式一个像素不动。
+                  只在学过词的章节渲染：一个词都没学过时，拼写队列必定是空的。 */}
+              {started > 0 && (
+                <div className="px-2 pb-3">
+                  <Link
+                    href={`/study?unit=${unit.id}&spell=1`}
+                    className="text-xs text-[var(--color-brand)] underline underline-offset-4"
+                  >
+                    拼写检验这一章（{started} 个）
+                  </Link>
+                </div>
+              )}
             </li>
           );
         })}
