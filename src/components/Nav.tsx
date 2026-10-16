@@ -51,6 +51,23 @@ const ICON = {
       <path d="M13.4 3.4H9.8a1.8 1.8 0 0 0-1.8 1.8v7.4a1.8 1.8 0 0 1 1.8-1.8h3.6z" />
     </svg>
   ),
+  // 拼写练习 —— 一支斜放的铅笔。写字，和另外四支（日历 / 书 / 柱状 / 滑杆）
+  // 一眼分得开。左上是笔尾那道横线，左下收成笔尖
+  spelling: (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="h-4 w-4 shrink-0"
+    >
+      <path d="M10.9 2.6a1.6 1.6 0 0 1 2.3 0l.2.2a1.6 1.6 0 0 1 0 2.3l-7 7-3.2.9.9-3.2z" />
+      <path d="M8.2 5.5 10.6 7.9" />
+    </svg>
+  ),
   // 研习统计 —— 三根高低不同的竖柱 + 一条基线。折线在 16px 下会糊成一团，
   // 柱状读得出高低；和设置那两根滑杆也一眼分得开
   stats: (
@@ -98,13 +115,28 @@ const ICON = {
 //
 // 收完的算术：印章 40 + 品牌↔导航间隙 4 + 导航 278（= 68×4 + 2×3）= 322px，
 // 375px 下余 21px、360px 下余 6px。320px 由 AppShell 的 `max-[359px]:hidden`
-// 兜底（藏掉印章省下 44px）。桌面侧栏 240px 宽、内容宽 208px，四项带图标竖排
+// 兜底（藏掉印章省下 44px）。桌面侧栏 240px 宽、内容宽 208px，五项带图标竖排
 // 绰绰有余，一个字都不用动。
 //
 // ⚠️ 加项前那一版是「三项 + 印章 = 292px」，现在那个数已经不对了。
-const NAV = [
+//
+// **拼写练习（第五项）只上 rail。** 窄屏顶栏加不下：四项是 322px，第五项要多
+// 70px（项 68 + 间隙 2），375px 下溢出 49px；320px 那道藏印章的兜底省下 44px
+// 也补不平。要硬塞就得同时降字号、收内边距，还得把手机上唯一的品牌标识拿掉——
+// 为一个入口把整条栏改坏不划算。窄屏改从首页「拼写练习（N 个学过的词）」和
+// 章节页每行那条链接进，这两条本来就在。桌面侧栏没这个问题，所以只在 rail
+// 这一侧多一项（这也是当初错词本没做成导航项的同一条账，见 PRD 2.6）。
+const NAV: {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+  /** 只在桌面侧栏出现。窄屏顶栏的宽度预算付不起，理由见上一段 */
+  railOnly?: boolean;
+}[] = [
   { href: "/", label: "今日功课", icon: ICON.today },
   { href: "/units", label: "章节词汇", icon: ICON.units },
+  // 排在「章节词汇」后面：这两项是「在词汇上做的练习」，统计和设置仍在最后
+  { href: "/spelling", label: "拼写练习", icon: ICON.spelling, railOnly: true },
   { href: "/stats", label: "研习统计", icon: ICON.stats },
   { href: "/settings", label: "研习设置", icon: ICON.settings },
 ];
@@ -131,7 +163,7 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
   // `unit` 压过 `weak`，这里也必须是 `unit` 先判，否则 `?unit=3&weak=1` 时页面按
   // 章节走、高亮却亮「研习统计」。
   //
-  // 用 `useSearchParams` 是安全的：五个页面全是 `force-dynamic`，没有静态预渲染，
+  // 用 `useSearchParams` 是安全的：六个页面全是 `force-dynamic`，没有静态预渲染，
   // 不会触发 CSR bailout（那才是需要 Suspense 边界的场景）。
   const current = pathname.startsWith("/study")
     ? unitParam
@@ -144,7 +176,7 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
   // 点击后**立刻**把高亮挪到目标项，不等新页面数据回来。
   //
   // 为什么需要：`current` 跟着 `usePathname()` 走，而 pathname 是等新页面整棵子树
-  // commit 之后才变的。五个页面全是 `force-dynamic`，所以这中间隔着一次完整的服务端
+  // commit 之后才变的。六个页面全是 `force-dynamic`，所以这中间隔着一次完整的服务端
   // 往返——本地 dev 热态实测高亮要等 65~185ms 才动，服务端正在编译路由（改完文件
   // 第一次访问）时到 1~2 秒。这段时间高亮还停在旧项上；loading 骨架也要等服务端把
   // 第一段流回来才出现（实测再晚 60~90ms），所以点击后有个上百毫秒的窗口**画面完全
@@ -165,6 +197,10 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
   return (
     <nav className={rail ? "flex flex-col" : "flex items-center gap-0.5"}>
       {NAV.map((item) => {
+        // `railOnly` 那几项在窄屏顶栏直接不渲染——宽度预算付不起第五项，
+        // 算术见上面 NAV 那段
+        if (!rail && item.railOnly) return null;
+
         // 根路径要全等，否则任何页面都会命中 "/"
         const active =
           item.href === "/" ? current === "/" : current.startsWith(item.href);

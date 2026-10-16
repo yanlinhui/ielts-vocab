@@ -133,6 +133,7 @@ IELTS Learning Tools/
 │   │   ├── page.tsx                   # 首页：今日进度 + 开始按钮 + 每日一句 / 热力图（见 12.1、12.2、12.4）
 │   │   ├── units/page.tsx             # 单元列表（排成书末目录的样子）
 │   │   ├── study/page.tsx             # 学习/复习（核心）
+│   │   ├── spelling/page.tsx          # 拼写练习（独立页，2026-10-16 从 /study?spell=1 拆出）
 │   │   ├── stats/page.tsx             # 统计（阶段三）
 │   │   ├── settings/page.tsx          # 设置
 │   │   └── api/
@@ -143,6 +144,7 @@ IELTS Learning Tools/
 │   │   ├── Nav.tsx                    # 导航链接（client，bar / rail 两种排布）
 │   │   ├── WordCard.tsx               # 翻面卡片（正面单词 / 背面全展开，见 5.5）
 │   │   ├── StudySession.tsx           # 会话状态机（队列 + 评分 + 重入队）
+│   │   ├── SpellSession.tsx           # 拼写题面（受控，见 14.2）
 │   │   ├── RatingButtons.tsx          # 四档按钮 + 各自的下次间隔
 │   │   ├── SpeakButton.tsx            # 喇叭按钮
 │   │   ├── ProgressBar.tsx
@@ -154,7 +156,8 @@ IELTS Learning Tools/
 │   │   ├── db.ts                      # Prisma 客户端单例（挂 globalThis）
 │   │   ├── srs.ts                     # ★ FSRS 封装，唯一 import ts-fsrs 处
 │   │   ├── session.ts                 # 会话队列 + 今日统计
-│   │   ├── stats.ts                   # 热力图 / 每日一句 / band 估算，见第 12 节
+│   │   ├── stats.ts                   # 热力图 / 每日一句，见第 12 节
+│   │   ├── spelling.ts                # ★ 拼写比对（编辑距离 DP + 回溯，零依赖，见 14.1）
 │   │   ├── rating.ts                  # Rating 类型 + 四档文案（不碰数据库）
 │   │   ├── tts.ts                     # Web Speech API 封装
 │   │   ├── user.ts                    # getCurrentUser()（多用户预留位）
@@ -164,7 +167,8 @@ IELTS Learning Tools/
 │   ├── env.ts                         # ★ 把 DATABASE_URL 指向 test.db，必须第一个 import
 │   ├── helpers.ts                     # 建测试库 + 清表 + 造 fixture
 │   ├── srs.test.ts                    # FSRS 调度的形状（12 条）
-│   └── session.test.ts                # 队列规则与日期口径（29 条）
+│   ├── spelling.test.ts               # 比对算法（17 条，纯函数、不碰数据库，见 8.8）
+│   └── session.test.ts                # 队列规则与日期口径（43 条）
 ├── .env                               # DATABASE_URL（gitignore）
 ├── .claude/launch.json                # 本地 dev server 配置
 └── package.json
@@ -903,11 +907,13 @@ if (p.state === "review" && p.scheduledDays >= 21) slot.mastered += 1;
 
 > 临时数据：为验证往 unit 2 插过 3 行（wordId 234/235/236），**验完已删净**，`UserWordProgress` 回到 24 行、全部属于 unit 1。
 
-### 6.4 队列四：拼写（`/study?spell=1`，2026-10-16）
+### 6.4 队列四：拼写（`/spelling`，2026-10-16）
 
-**第四种来源，和错词本同构**：不读 `userSettings`、不看到期、按一个固定顺序给全。区别只在**名单从哪来**——错词本的名单由调用方给定（统计页那份 `rating = 1` 的排序），拼写的名单是「所有有进度行的词」，`buildSession` 自己查得到，所以 URL 上只要一个开关加一个可选的 `unit`。
+**第四种来源，和错词本同构**：不读 `userSettings`、不看到期、按一个固定顺序给全。区别只在**名单从哪来**——错词本的名单由调用方给定（统计页那份 `rating = 1` 的排序），拼写的名单是「所有有进度行的词」，`buildSession` 自己查得到，所以调用方只要一个开关加一个可选的 `unit`。
 
-| | 拼写（`/study?spell=1`） |
+> **调用方从 `/study?spell=1` 换成了 `/spelling`**（同日拆成独立页，见 14.8）。**这一层一个字没动**：`BuildSessionOptions.spell` 和上面的分岔顺序原样保留，`/study` 只是不再传它了，改在 `/study` 顶部把旧地址重定向到 `/spelling`。下面这张表里的「URL 上只要一个开关」说的就是 `opts.spell`。
+
+| | 拼写（`/spelling`，`buildSession({ spell: true })`） |
 |---|---|
 | 取词范围 | **有 `UserWordProgress` 行的词**（学过的），可选再按 `unitId` 收窄 |
 | 顺序 | `dueAt` 升序 |
@@ -925,7 +931,7 @@ if (opts.unitId) return buildUnitSession(userId, opts.unitId);
 if (opts.wordIds) return buildWordListSession(userId, opts.wordIds);
 ```
 
-`?unit=3&spell=1` 要的是「**第 3 章里学过的**词」，而 `buildUnitSession` 给的是「第 3 章里**还没学过的**词」（6.1 第二次修正）。这两行一换，同一个地址就从「拼写检验」变成「章节初学」——而且**不会报错**，只是内容完全不对，页面上没有任何东西能提示「你现在其实是另一种模式」。所以 `spell` 这个分岔把 `unitId` **吃进自己的参数**往下传，而不是等上一行把它消费掉。
+`/spelling?unit=3`（即 `{ spell: true, unitId: 3 }`）要的是「**第 3 章里学过的**词」，而 `buildUnitSession` 给的是「第 3 章里**还没学过的**词」（6.1 第二次修正）。这两行一换，同一个请求就从「拼写检验」变成「章节初学」——而且**不会报错**，只是内容完全不对，页面上没有任何东西能提示「你现在其实是另一种模式」。所以 `spell` 这个分岔把 `unitId` **吃进自己的参数**往下传，而不是等上一行把它消费掉。
 
 `tests/session.test.ts` 里「给定 unitId 时只给这一章学过的词」那条同时守这两件事——变异检查把这两行对调，它确实变红。
 
@@ -1765,7 +1771,7 @@ Require stack: ... .next/server/webpack-runtime.js
 
 实测两字时期顶栏用了 315.7px、还剩 **27.6px** 余量，正好和「加图标要多 66px」对得上。
 
-> ⚠️ **上面这张表是 11.10 时期的记录，导航项改成四字之后（见 11.12）这套账彻底变了**：不是「不加图标」就够，连品牌文字块也得收起来。留着是因为它记录了当时判据的来路，**不要拿它当现在的依据**。
+> ⚠️ **上面这张表是 11.10 时期的记录，导航项改成四字之后（见 11.12）这套账彻底变了**：不是「不加图标」就够，连品牌文字块也得收起来。留着是因为它记录了当时判据的来路，**不要拿它当现在的依据**。现依据见 11.7 那段宽度预算与 11.14（第五项只上 rail）。
 
 #### 圆角（覆盖 11.1 那一段）
 
@@ -2043,8 +2049,9 @@ Require stack: ... .next/server/webpack-runtime.js
 | `/study` | 今日功课 |
 | `/study?unit=1` | **章节词汇** |
 | `/units` | 章节词汇 |
+| `/spelling`、`/spelling?unit=1` | 拼写练习（11.14 加进来之后） |
 | `/settings` | 研习设置 |
-| `/nonexistent-xyz` | 三项全暗（404 页，符合预期） |
+| `/nonexistent-xyz` | 全暗（404 页，符合预期） |
 
 **明确没动的**：`/study` 页面本身一个字没改。底部那一行（自动发音开关 + 「进度已实时保存」+「退出」按钮）实测改前改后逐项一致——375×812 下退出按钮仍 **66×36**、右缘 359、与开关之间余 75px。
 
@@ -2060,6 +2067,44 @@ Require stack: ... .next/server/webpack-runtime.js
 | 侧栏当前项 | 「今日功课」朱砂块 + `aria-current="page"` | — |
 
 **另一处刻意的「不改」**：桌面端侧栏常驻之后，卡片右下角那个「退出」（目标同样是 `/`）和侧栏的「今日功课」在功能上重叠。**保留**——它一半的价值在「进度已实时保存」那句话上，那是导航链接不承载的语义（消除「我这一走会不会丢进度」的顾虑）；而且刚背完一轮时视线在卡片上，右下角比左上角近。窄屏更不必说，底部按钮离拇指最近。
+
+---
+
+### 11.14 导航第五项「拼写练习」：只上桌面侧栏（2026-10-16）
+
+拼写从学习页拆成独立页 `/spelling` 时，侧栏要加第五项。**加不下的是窄屏顶栏，不是侧栏**——桌面侧栏 240px 宽、内容宽 208px，五项带图标竖排绰绰有余（每项实测 208px）。所以这一项的做法是给 `NAV` 加一个标记，**只在 rail 那一侧出现**。
+
+```ts
+const NAV: { href: string; label: string; icon: React.ReactNode; railOnly?: boolean }[] = [
+  { href: "/",         label: "今日功课", icon: ICON.today },
+  { href: "/units",    label: "章节词汇", icon: ICON.units },
+  { href: "/spelling", label: "拼写练习", icon: ICON.spelling, railOnly: true },
+  { href: "/stats",    label: "研习统计", icon: ICON.stats },
+  { href: "/settings", label: "研习设置", icon: ICON.settings },
+];
+
+// 窄屏顶栏直接不渲染——宽度预算付不起第五项
+if (!rail && item.railOnly) return null;
+```
+
+`NAV.map` 的回调体为此从表达式体改成块体（要插那行 `if`）。新增一支铅笔图标，与既有四支同一套规格（16px、`fill="none"`、`stroke="currentColor"`、`strokeWidth 1.6`、`aria-hidden`）——写字，和日历 / 书 / 柱状 / 滑杆一眼分得开。
+
+**为什么不硬塞进顶栏**：11.7 那笔账算完只剩 21px（375px 下），第五项要多 **70px**（项 68 + 间隙 2），**溢出 49px**；320px 那道「藏印章省 44px」的兜底也补不平。要硬塞必须同时降字号、收内边距，还得把手机上唯一的品牌标识拿掉——为一个入口把整条栏改坏不划算。**这与 6.2 里错词本没做成导航项是同一条账**，那一条讲的就是窄屏顶栏，到现在一个像素没变，理由仍然成立。
+
+**`current` 判定不用动**：`/spelling` 不以 `/study` 开头，走的是 `pathname` 那条路，`active` 天然命中新项；`/spelling?unit=N` 也一样——它就是这个板块本身，不像 `/study?unit=N` 那样要按来源折算归属。
+
+#### 验证（1280×800 / 375×812）
+
+| 项 | 1280×800 | 375×812 |
+|---|---|---|
+| 导航项数 | **5**（rail），每项 208px，当前项「拼写练习」在第三位 | **4**（bar），无「拼写练习」 |
+| 顶栏/侧栏宽度 | 侧栏 240px、`display:flex` | 导航 278px + 印章 40 = **318px**（加间隙 4 = 322px，与预算一致） |
+| 横向溢出 | 0 | **0**（`scrollWidth` 375 = `innerWidth`） |
+| `aria-current` | `/spelling` 下「拼写练习」= `page` | — |
+
+`AppShell.tsx` 未改动（侧栏宽度与断点都没动）。
+
+> **连带的一个数变了**：`force-dynamic` 的页面从五个变成**六个**（多了 `/spelling`）。`Nav.tsx` 里用 `useSearchParams()` 只要「没有静态预渲染」这个前提成立就安全，加一页不改变这一点——但代码注释里写死的那个数字要跟着改（已改）。
 
 ---
 
@@ -2463,14 +2508,17 @@ const chapterDone = rated === 0 && unit !== null;
 
 底部那行错词本出口也加了 `!spell`——拼写进门就空时，把人往错词本引是南辕北辙。
 
-### 14.4 两个入口
+### 14.4 三处入口
 
 | 位置 | 文案 | 条件 |
 |---|---|---|
-| 首页主按钮**下方** | 「拼写练习（N 个学过的词）」→ `/study?spell=1` | `stats.started > 0` |
-| 章节页学过的章节行**下** | 「拼写检验这一章（N 个）」→ `/study?unit=N&spell=1` | 该章 `started > 0` |
+| 桌面侧栏第三项 | 「拼写练习」→ `/spelling` | 无（导航项常驻） |
+| 首页主按钮**下方** | 「拼写练习（N 个学过的词）」→ `/spelling` | `stats.started > 0` |
+| 章节页学过的章节行**下** | 「拼写检验这一章（N 个）」→ `/spelling?unit=N` | 该章 `started > 0` |
 
-两处都是**文字链接而不是按钮**：主按钮是「今天该干的事」，拼写是加练，主次得分得清。`stats.started` 是 `getTodayStats` 现成返回的，不用新查询。
+首页和章节页两处都是**文字链接而不是按钮**：主按钮是「今天该干的事」，拼写是加练，主次得分得清。`stats.started` 是 `getTodayStats` 现成返回的，不用新查询。**侧栏那条只上桌面**（11.14），所以后两条在手机上不是「顺带也有」，而是主要入口。
+
+> 侧栏那条是 14.8 拆页时加的；后两条的 `href` 从 `/study?spell=1` 改指向 `/spelling`，**文案与条件一个字没变**。
 
 **章节页那条不能塞进原来那行里**：整行已经被一个 `<Link>` 包着，**`<a>` 套 `<a>` 是非法 HTML**（`WordCard.tsx` 里「不用 button 套 button」是同款坑）。所以它是 `<li>` 里的**兄弟节点**，那一行目录的版式一个像素没动——原来的 `px-2 py-3` 顺带拆成 `pt-3 pb-1`，加进来的那条自己带 `pb-3`。
 
@@ -2478,7 +2526,11 @@ const chapterDone = rated === 0 && unit !== null;
 
 `Nav.tsx` 的判法是「`/study` 上带 `unit` → 章节词汇；带 `weak` → 研习统计；都不带 → 今日功课」。拼写**不改变来源**：`/study?spell=1`（首页进的）落「今日功课」，`/study?unit=N&spell=1`（章节页进的）落「章节词汇」——天然就对，`spell` 不需要进那个判据。
 
+> **14.8 拆成独立页后这一整节作废**：`/spelling` 自己就是导航第五项，不再需要按来源折算归属。判据一个字没动——`/spelling` 不以 `/study` 开头，走的是 `pathname` 那条路，天然命中。留着是因为它记录了「为什么当时不需要改」。
+
 ### 14.6 验证（2026-10-16）
+
+> ⚠️ **下面这张表是拆页之前那一轮（`/study?spell=1` 时期）的读数**，表里的 URL 现在已经改指 `/spelling`，归属也由 14.8 取代。留着是因为它记录了组件本身的行为——**组件那一层没变**，变的只是谁挂载它、地址长什么样。拆页当轮的验证在 14.8。
 
 | 项 | 结果 |
 |---|---|
@@ -2503,6 +2555,56 @@ const chapterDone = rated === 0 && unit !== null;
 - **不动 schema、不迁移**：拼写结果走现成的 `/api/review`，落 `ReviewLog` 和 `UserWordProgress`，**不新增「模式」字段**。代价是统计页会把拼写算进「新学 / 复习」——这是可接受的，它确实是一次真实作答；要区分得动数据模型，不划算
 - **不做单词级跳转**（章节页每一行不直接进某词的拼写）
 - **不做「提示」按钮**（提前露一个字母）——PRD 没要求，先把主链路走通
-- **不给导航加第五项**（窄屏宽度预算已用满，见 6.2 与 PRD 2.6）
+- ~~**不给导航加第五项**（窄屏宽度预算已用满，见 6.2 与 PRD 2.6）~~ ✅ **同日拆页时加了，但只上桌面侧栏**（见 14.8 与 11.14）。**窄屏顶栏仍然没有第五项**——那条宽度预算一个像素没变
 - **不新增颜色 / 圆角 / 字号令牌**，不引任何依赖
+
+---
+
+### 14.8 拆成独立页 `/spelling`（2026-10-16 同日）
+
+**起因**：用户要求「把拼写与听写模式单独出来，在侧边栏单独一页」。此前它挂在学习页上（`/study?spell=1`），入口只有首页和章节页两条文字链接。
+
+**新建 `src/app/spelling/page.tsx`**：server component、`force-dynamic`，形状照 `units/page.tsx`。四份数据并行取——`userSettings`（要 `accent`）、`buildSession(user.id, { spell: true, unitId })`、`userWordProgress` 的全部行（只为在 JS 里数出「每章学过几个词」）、以及全部 22 行 `unit`（一份数据同时供 chip 的章号与空态的章名）。**队列来源一个字没改**，还是 6.4 那个 `buildSpellSession`。
+
+```tsx
+const unitId = params.unit ? Number(params.unit) : undefined;
+const validUnitId = unitId && Number.isInteger(unitId) ? unitId : undefined;
+// …
+<StudySession key={validUnitId ?? "all"} initialQueue={queue} accent={accent} unit={unit} spell />
+```
+
+**范围 chip**：页顶一排 `<Link>`（`flex flex-wrap`），最前是「全部 N」，后面每个**学过词的**章节一个「第 N 章 M」。选中态走实底朱砂 + `--color-on-brand`，未选中走 `--color-line` 描边——和 `SpellSession` 那两格模式 tab 是同一种「这里是当前位置」的语言。**纯服务端渲染、零 JS**（与 `/stats` 一致）。chip 上的数字是「这一范围里学过多少词」，与 `SPELL_LIMIT`（50，队列上限）是两回事。`aria-current` 用的是 `"true"` 而不是 `"page"`：这几个 chip 是**同一页上的筛选**，不是导航目的地（导航项才用 `page`）。
+
+**一个计划里没有、实现时才发现的坑：`StudySession` 的 `queue` 是 `useState(initialQueue)`，只在挂载时读一次初值。** `/spelling` 是**唯一会在同一条路径上换 query 的页面**——点范围 chip 走的是 Next 的客户端导航，同路径只换 `?unit=`，**client component 不会被卸载**，服务端送来的新 props 直接丢掉。后果不是报错，而是**页面继续显示上一范围剩下的词，越答越少**，看着像「这一章真只有这么几个词」。修法是给 `<StudySession>` 一个随范围变化的 `key`（`key={validUnitId ?? "all"}`）**强制重挂载**。`/study` 那边没有这个问题（换章是从 `/units` 进来，是一次真正挂载），所以这个 `key` 只加在新页面上。
+
+> 实测确认重挂载生效：往输入框打字 → 点另一个范围 chip → **输入框被清空**，队列与计数跟着换。
+
+**`/study` 拆掉 `spell`**：`searchParams` 类型去掉它、`weak` 回到 `!validUnitId && Boolean(params.weak)`、`opts` 退回两层三元、不再给 `StudySession` 传 `spell`。文件头那段「四种进法」改成三种。**保留一条旧地址重定向**：
+
+```ts
+if (params.spell) redirect(validUnitId ? `/spelling?unit=${validUnitId}` : "/spelling");
+```
+
+放在**取用户和查设置之前**——它是纯路由判断，不该先做两次数据库查询再丢掉。理由：`/study?spell=1` 是上一版真正发布过、文档里也写着的地址，不重定向的话它会**静默落回每日动线**，那是个错的答案而不是个错误。
+
+> ⚠️ **`redirect()` 在 Next 15 的 App Router 里对完整文档请求返回的是 200 + 流式 payload 里的 `NEXT_REDIRECT` 标记**，不是 HTTP 3xx——shell 先刷出去，客户端再跳。所以**用 curl 看到的是 200、HTML 主体里也 grep 不到目标页内容**，容易误判成「重定向没生效」。判据是响应里有没有 `NEXT_REDIRECT`，或者直接用浏览器看最终落在哪个地址。实测 `/study?spell=1` → `/spelling` 端到端成立。
+
+**`StudySession.tsx` 去掉一处重复**：拼写模式下头部那行左边原本写「拼写 · 第 N 章 XX」，而 `SpellSession` 自己那行已经出过一次章名、`/spelling` 页顶还有 h1 和范围 chip——同一屏里第三次出现就是噪音，改成留空。**空 `<span>` 保留**：外层 `justify-between` 靠它把右边那句顶到行尾，改成整块不渲染右边会挪到左边。`modeLabel` 同时去掉拼写那一支（模式由页面自己的 h1 说明，再标一次是重复）。
+
+#### 验证（2026-10-16）
+
+| 项 | 结果 |
+|---|---|
+| `tsc --noEmit` / `npm test` | 退出码 0 / **72 条全绿**（这次没动被测代码，属回归确认） |
+| `prisma/dev.db` | 跑测试前后**逐位一致**（1617920 字节 / md5 `78c9182c9d311fe5c613a6cb0aba1ba4`）——测试走 `prisma/test.db` |
+| `/spelling` | h1 + 范围 chip（`全部 27` / `第 1 章 27`）+ 会话（`还剩 27 个 · 已完成 0`、模式 tab、释义、检查、进度已实时保存、退出）；进度行左侧已为空 |
+| 点范围 chip | → `/spelling?unit=1`，chip 选中态跟着切，**输入框被清空**（重挂载生效） |
+| 空态 | `/spelling?unit=22` → 「第 22 章还没有学过的词」+ 说明 + 回首页 / 浏览章节词汇，**范围 chip 仍在上方可换** |
+| 旧地址 | `/study?spell=1` → 端到端落到 `/spelling` |
+| 答错 | `jeopardize`（正确 `jeopardise`）→ 「第 9 个字母写成了「z」，应该是「s」」+ 逐字符高亮；`form` 个数 0；`document.activeElement` 是「下一个」按钮（14.2 那个焦点接管在新页面上仍成立）；**未点「下一个」，所以没有落库** |
+| 不回归 | `/`、`/units`、`/stats`、`/settings`、`/study`、`/study?unit=3`、`/study?weak=1` 全部 200 且内容标记正确；**全站已无残留 `spell=` 链接** |
+
+> **踩了一个 dev server 的坑，记下来**：走查中途 `<main>` 停在 `loading.tsx` 的骨架屏上，真页面渲染成一棵挂在 `<body>` 下、**不在 `<main>` 里**的树——于是 `document.querySelector('main').innerText` 读到「正在加载…」而内容其实已经渲染好了。**只有重启 dev server 能清掉**（full reload 也卡着），不是代码问题。
+
+**明确没做**（这一轮）：不动 `lib/session.ts`（`buildSpellSession` 与 `BuildOptions.spell` 原样保留）、不动 `lib/spelling.ts`、不动 `SpellSession.tsx`、不动任何测试；**不提高 `SPELL_LIMIT`**（已学词超过 50 时队列仍只给 50 个，这是 6.4 里写明的现状）；不做下拉 / 横向滚动 / 「更多」菜单这类第二套导航；不给窄屏顶栏加第五项；不新增颜色 / 圆角 / 字号令牌，不引依赖。**`app/units/page.tsx` 那条章节页链接保留**——它是「从正看着的这一章直接进去」的深链，和同一行上面那条 `/study?unit=N` 同类，不是「同一目的地的第二条路」（当初删首页两个快捷入口，删的是和导航**完全等价**的 `词库`/`设置`）。
 

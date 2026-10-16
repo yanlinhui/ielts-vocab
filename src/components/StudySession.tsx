@@ -46,7 +46,7 @@ export default function StudySession({
    */
   weak?: boolean;
   /**
-   * 拼写模式（`/study?spell=1`，可叠加 `unit`）。置真时把词卡换成拼写题面，
+   * 拼写模式（`/spelling`，可叠加 `unit`）。置真时把词卡换成拼写题面，
    * 队列怎么消费、评分怎么提交**一律不变**——`SpellSession` 只借 `onRate` 出去，
    * 会话内重排那套逻辑这里原样复用。
    */
@@ -134,7 +134,7 @@ export default function StudySession({
     //   5. 每日动线进门就空 —— 今天没有待办的词
     //
     // ⚠️ 判定顺序不能反：`spellDone` 必须排在最前，`weakDone` 排在它后面、
-    // 最后那支前面。`?unit=3&spell=1` 这种地址下 `unit` 不为空、又还没答过，
+    // 最后那支前面。`/spelling?unit=3` 这种地址下 `unit` 不为空、又还没答过，
     // 顺序反了就会先命中 `chapterDone` 说出「第 3 章已经学完」——可用户是来默写
     // 的，那一章恰恰有学过的词，那是句错的诊断。错词本那边同理：反了会读到
     // 「今天没有待学的词了」，让人以为今天配额用光了。
@@ -218,16 +218,26 @@ export default function StudySession({
 
   const current = queue[0];
 
-  // 这一轮是什么模式，写进头部那一行。拼写和错词本都得让人一眼看出换了模式，
-  // 否则和「今日功课」长得一模一样。优先级和 study/page.tsx 里那份保持一致。
-  const modeLabel = spell ? "拼写" : weak ? "错词本" : current.isNew ? "新词" : "复习";
+  // 这一轮是什么模式，写进头部那一行——错词本得让人一眼看出换了模式，否则和
+  // 「今日功课」长得一模一样。**拼写不在这儿标**：那一页有自己的 h1，模式由页面
+  // 本身说明，这里再写一次就是重复。
+  const modeLabel = weak ? "错词本" : current.isNew ? "新词" : "复习";
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between text-xs text-[var(--color-muted)]">
+          {/* 拼写模式下左边留空：这一章的章名 `SpellSession` 自己那行已经出过一次
+              （`第 N 章 XX`），而 `/spelling` 页顶还有 h1 和范围 chip——同一屏里
+              第三次出现就是噪音。
+              ⚠️ 空 `<span>` 要留着：外层 `justify-between` 靠它把右边那句顶到行尾，
+              改成整个孩子不渲染，右边那句会挪到左边。 */}
           <span>
-            {modeLabel} · 第 {current.unitNo} 章 {current.unitName}
+            {!spell && (
+              <>
+                {modeLabel} · 第 {current.unitNo} 章 {current.unitName}
+              </>
+            )}
           </span>
           <span>
             还剩 {queue.length} 个 · 已完成 {rated}

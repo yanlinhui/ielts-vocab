@@ -86,11 +86,14 @@ export default async function UnitsPage() {
                   再套一个就是 `<a>` 套 `<a>`，非法 HTML（词卡那边踩过同一个坑，
                   见 WordCard.tsx 里「不能用 button 套 button」那条注释）。所以它
                   是 `<li>` 里的兄弟节点，那一行目录的版式一个像素不动。
-                  只在学过词的章节渲染：一个词都没学过时，拼写队列必定是空的。 */}
+                  只在学过词的章节渲染：一个词都没学过时，拼写队列必定是空的。
+                  这条**保留**、不是重复入口：拼写页的范围 chip 虽然也能选到这一章，
+                  但从「正看着的这章」直接进去是条深链，和上面那条 `/study?unit=N`
+                  同类，不是「同一目的地的第二条路」。 */}
               {started > 0 && (
                 <div className="px-2 pb-3">
                   <Link
-                    href={`/study?unit=${unit.id}&spell=1`}
+                    href={`/spelling?unit=${unit.id}`}
                     className="text-xs text-[var(--color-brand)] underline underline-offset-4"
                   >
                     拼写检验这一章（{started} 个）
