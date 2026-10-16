@@ -127,7 +127,7 @@ IELTS Learning Tools/
 │   └── seed.ts                        # 读 words.clean.json 灌库
 ├── src/
 │   ├── app/
-│   │   ├── layout.tsx                 # 全局布局 + 字体导入 + 页头
+│   │   ├── layout.tsx                 # 全局布局 + 字体导入，壳层交给 AppShell
 │   │   ├── icon.svg                   # favicon（Next 约定文件名）
 │   │   ├── globals.css                # Tailwind 入口 + 设计令牌 + .flip-*，见第 11 节
 │   │   ├── page.tsx                   # 首页：今日进度 + 开始按钮
@@ -139,7 +139,8 @@ IELTS Learning Tools/
 │   │       ├── review/route.ts        # POST 评分
 │   │       └── settings/route.ts      # POST 保存设置
 │   ├── components/
-│   │   ├── Nav.tsx                    # 页头导航（client，靠 usePathname 标出当前页）
+│   │   ├── AppShell.tsx               # ★ 壳层：顶部栏 / 左侧栏 / 内容区，见 11.7
+│   │   ├── Nav.tsx                    # 导航链接（client，bar / rail 两种排布）
 │   │   ├── WordCard.tsx               # 翻面卡片（正面单词 / 背面全展开，见 5.5）
 │   │   ├── StudySession.tsx           # 会话状态机（队列 + 评分 + 重入队）
 │   │   ├── RatingButtons.tsx          # 四档按钮 + 各自的下次间隔
@@ -1080,3 +1081,51 @@ Require stack: ... .next/server/webpack-runtime.js
 - 深色模式
 - 改任何业务逻辑、数据模型、接口（`lib/srs.ts` / `lib/session.ts` / `lib/tts.ts` / `api/*` 未动）
 - 动 `globals.css` 的 `.flip-*` 区块
+
+### 11.7 导航壳层：顶部栏 → 左侧栏（2026-10-16）
+
+顶部那条横栏改成左侧侧边栏。`layout.tsx` 里的 `<header>` 整个搬进新的 `AppShell.tsx`。
+
+**为什么要多一个 `AppShell` 组件**：`layout.tsx` 是 server component，读不到 `pathname`，而「学习页收起左侧栏」必须知道当前路由。`Nav.tsx` 虽然也是 client 组件，但它只负责链接列表，管不了外层的排布。所以把整个壳层（顶部栏 + 左侧栏 + 内容区）抽出来做成 client 组件，`layout.tsx` 只把 `children` 传进去。
+
+> server component 把 `children` 作为 prop 传给 client component 是 App Router 的标准用法，页面本身仍是服务端渲染——`/units` 的 Prisma 查询、`force-dynamic` 都不受影响（已实测：22 行章节正常出）。
+
+**断点行为**（`lg` = 1024px）：
+
+| | <1024px | ≥1024px |
+|---|---|---|
+| 顶部横栏 | 显示 | `display:none` |
+| 左侧竖栏 | `display:none` | 显示，220px，`sticky` + `h-dvh` |
+
+两套导航同时挂在 DOM 里，靠断点切换——**任一时刻只有一套在无障碍树里**（另一套是 `display:none`，读屏会剔除）。实测 `querySelectorAll("nav")` 长度为 2，其中 `offsetParent !== null` 的只有 1 个。如果换成 `visibility` 或 `opacity` 藏，就会变成两个重复的导航地标，读屏用户要听两遍。
+
+**为什么窄屏不跟着收成侧边栏**：375px 视口下卡片实测就占 343.3px，再挖掉一个固定侧栏，长单词（`internationalization`）和翻转锁高都会被挤坏。窄屏继续走原来的顶部栏，手机上的学习体验完全不变。
+
+**布局用 flex 而不是 `fixed` + `pl-[220px]`**：
+
+```
+<div className="lg:flex">
+  <aside className="hidden … lg:sticky lg:top-0 lg:h-dvh lg:w-[220px] lg:shrink-0 lg:flex-col">
+  <div className="lg:min-w-0 lg:flex-1">
+    <main className="mx-auto max-w-3xl px-4 py-6">
+```
+
+`fixed` 方案要把 220px 写死在两处（侧栏宽度 + 内容左边距），改宽度就得同步改两个数，迟早对不上。flex 只在一处声明宽度。
+
+**`lg:min-w-0` 是必需的，不是保险**：flex 子项的 `min-width` 默认是 `auto`，不加的话内部长单词会把这列顶宽、溢出到侧栏底下——和 11.5 里修的那个卡片撑宽 bug 是同一个成因。实测加与不加的差别就是卡片宽度对不对得上。
+
+**学习页的沉浸**（`IMMERSIVE = ["/study"]`）：这一页**只收起桌面那侧的栏**，窄屏顶部栏照旧保留——否则手机上就没有任何出口了（这页底下只有一个「先退出」文字链接）。沉浸时左侧栏是**整块不挂载**（不是 CSS 隐藏），避免留下点不动的死链。
+
+**验证结果**：
+
+| 项 | 1280×800 | 375×812 |
+|---|---|---|
+| 侧边栏 | 显示，220px，`sticky`，高 = 视口 | `display:none` |
+| 顶部栏 | `display:none` | 显示，57px |
+| 卡片宽度 | **736px**（与改版前一致） | **343.3px**（与改版前一致） |
+| 横向溢出 | 0 | 0 |
+| 无障碍树里的 `<nav>` 数 | 1 | 1 |
+
+`/study` 在 1280×800：侧边栏不存在，正面卡仍 **320px**，翻面后外框跟到背面 421px、无裁切，翻回时 `transitionDelay` 仍是 `calc(var(--flip-duration) / 2)`——**锁高机制一行未动，复测通过**。
+
+> **一个 HMR 的坑**：新增 `AppShell.tsx` 的那一刻，dev server 日志里出现 `Invariant: Expected clientReferenceManifest to be defined. This is a bug in Next.js.`。这是 Next.js dev 模式下 client manifest 陈旧的老毛病，不是代码问题——判据是服务端渲染是否还成功：`curl` 拿到的 HTML 里含 `aside`，说明渲染正常，错误是瞬时的。**刷新页面即可，不用删 `.next`。**

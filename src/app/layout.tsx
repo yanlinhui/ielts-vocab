@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Noto_Serif_SC } from "next/font/google";
-import Nav from "@/components/Nav";
+import AppShell from "@/components/AppShell";
 import "./globals.css";
 
 // 构建时由 Next 把字体拉到 .next 里自托管，运行时零网络请求。
@@ -33,27 +33,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN" className={serif.variable}>
       <body className="min-h-full">
-        {/* 页头跟页面同色，只靠底部一条细线和正文分开。原来这里是
-            surface/90 + backdrop-blur 的玻璃拟态——那是最典型的「App 感」，
-            和「纸书」是反的。 */}
-        <header className="sticky top-0 z-10 border-b border-[var(--color-line)] bg-[var(--color-canvas)]">
-          <nav className="mx-auto flex max-w-3xl items-center gap-1 px-4 py-3">
-            <span className="mr-auto flex items-center gap-2">
-              {/* 印章方块：纯 div，不需要任何图片资源 */}
-              <span
-                aria-hidden
-                className="grid h-6 w-6 place-items-center rounded-[var(--radius-chip)] bg-[var(--color-brand)] font-serif text-xs leading-none text-[var(--color-canvas)]"
-              >
-                真
-              </span>
-              <span className="font-serif text-base font-semibold tracking-[0.08em]">
-                雅思词汇真经
-              </span>
-            </span>
-            <Nav />
-          </nav>
-        </header>
-        <main className="mx-auto max-w-3xl px-4 py-6">{children}</main>
+        {/* 导航和内容区的层架在 AppShell 里——它要读 pathname 才能决定
+            学习页收不收起左侧栏，而这里读不到。 */}
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
