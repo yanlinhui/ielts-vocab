@@ -1,9 +1,14 @@
 // 会话队列：决定「今天这一轮该看哪些词、按什么顺序」。
 //
-// 规则（来自 PRD 2.1 / 2.2）：
-//   1. 先复习到期旧词，再学新词。旧词不复习会越积越多，必须优先
-//   2. 新词数量受「每日新词上限」约束，且要扣掉今天已经学过的
-//   3. 复习数量受「每日复习上限」约束
+// 有两种队列，分岔在 buildSession 的第一行：
+//
+//   A. 每日队列（`/study`，首页「开始」进来的）——规则来自 PRD 2.1 / 2.2：
+//        1. 先复习到期旧词，再学新词。旧词不复习会越积越多，必须优先
+//        2. 新词数量受「每日新词上限」约束，且要扣掉今天已经学过的
+//        3. 复习数量受「每日复习上限」约束
+//
+//   B. 章节专项（`/study?unit=N`，从章节词汇点某一章进来的）——整章一次给全，
+//      上面那三条**一条都不适用**。原因见 buildUnitSession 的注释。
 //
 // 队列在进入学习页时算一次。中途刷新页面就重算——已经评过分的词状态变了，
 // 不会重复出现（除非它因为答错被排到几分钟后，那本来就应该再出现）。
@@ -168,18 +173,15 @@ export async function buildSession(
   userId: number,
   opts: BuildSessionOptions = {},
 ): Promise<QueueItem[]> {
+  // 章节专项走另一条路：整章给全，不碰每日配额
+  if (opts.unitId) return buildUnitSession(userId, opts.unitId);
+
   const now = new Date();
   const settings = await prisma.userSettings.findUnique({ where: { userId } });
-  const unitFilter = opts.unitId ? { unitId: opts.unitId } : {};
 
   // ---- 1. 到期复习词，先来 ----
   const dueRows = await prisma.userWordProgress.findMany({
-    where: {
-      userId,
-      state: { not: "new" },
-      dueAt: { lte: now },
-      ...(opts.unitId ? { word: { unitId: opts.unitId } } : {}),
-    },
+    where: { userId, state: { not: "new" }, dueAt: { lte: now } },
     orderBy: { dueAt: "asc" },
     take: settings?.dailyReviewLimit ?? 200,
     include: { word: { include: { unit: true, examples: true } } },
@@ -208,7 +210,7 @@ export async function buildSession(
     });
 
     const newWords = await prisma.word.findMany({
-      where: { ...unitFilter, id: { notIn: studied.map((s) => s.wordId) } },
+      where: { id: { notIn: studied.map((s) => s.wordId) } },
       orderBy: [{ unitId: "asc" }, { orderInUnit: "asc" }],
       take: quota,
       include: { unit: true, examples: true },
@@ -220,6 +222,46 @@ export async function buildSession(
   }
 
   return items;
+}
+
+/**
+ * 章节专项：这一章的**全部**词，一次给全，按书里的顺序（`orderInUnit`）。
+ *
+ * ⚠️ **这里不套「每日新词上限 / 复习上限」，也不只取「今天到期的」。**
+ * 之前章节模式是把 `unitId` 塞进上面那条每日动线当过滤条件用的，于是「点某一章
+ * 只练那一章」实际变成了「今天原本要背的那几个词，恰好限定在这一章里」：实测
+ * 2026-10-16，第 1 章 233 个词，当天新词已学 18、每日上限 20，点进去只拿到
+ * 1 个到期词 + 2 个新词 = 3 个；配额用光的日子点进去更是**一个词都没有**，
+ * 直接弹「今天没有待学的词了」。用户报的就是这个（「学习的模式仍然是今日功课
+ * 的模式，应该为对应章节的所有词」）。
+ *
+ * 配额、到期、先复习后学新这三条，都是**首页那条动线**的规则——它的目的是
+ * 「每天固定喂一点、不让复习堆积」。章节专项是另一件事：用户主动挑了一章，
+ * 想要的就是把这一章走完，遇到哪些词已经学过、哪些今天到期，都不该拦着他。
+ *
+ * 代价是队列可能很长（第 21 章 408 个词是最长的一章），但进度是每评一次分就
+ * 实时落库的，中途退出不丢东西——这也正是学习页要写「进度已实时保存」的原因。
+ *
+ * 顺序上让已学过的词和没学过的词**按书序混在一起**，而不是把到期的提到前面：
+ * 章节的词本身是一个主题序列，跳到第 80 个再跳回第 3 个没有意义。
+ */
+async function buildUnitSession(userId: number, unitId: number): Promise<QueueItem[]> {
+  const [words, cards] = await Promise.all([
+    prisma.word.findMany({
+      where: { unitId },
+      orderBy: { orderInUnit: "asc" },
+      include: { unit: true, examples: true },
+    }),
+    prisma.userWordProgress.findMany({ where: { userId, word: { unitId } } }),
+  ]);
+
+  // 有进度行的走真实卡片状态（预览间隔、是否算「新词」都跟着它），
+  // 没有的就是一张空卡——和每日动线里对「新词」的处理一致。
+  const byWord = new Map(cards.map((c) => [c.wordId, c]));
+  return words.map((w) => {
+    const row = byWord.get(w.id);
+    return toQueueItem(w, row ?? emptyCard(), !row);
+  });
 }
 
 type WordWithRelations = {
