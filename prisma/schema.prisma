@@ -24,6 +24,25 @@ model Unit {
   name      String // 如 "自然地理"
   startPage Int? // 书页码，便于和原书对照
   words     Word[]
+  passages  Passage[]
+}
+
+/// 拓展阅读：自己写的短文，把某一章的词嵌进中文叙事里。
+/// **内容原创，不是书中原文**——所以不受第 6 节那笔版权风险的约束。
+model Passage {
+  id          Int    @id @default(autoincrement())
+  unitId      Int
+  unit        Unit   @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  orderInUnit Int // 这一章的第几篇，1 起；章内按这个排序就是阅读顺序
+  title       String
+  /// 正文。该章的词用 {{headword}} 包住——渲染成可点词块、自测时藏中文，
+  /// 校验脚本也靠这个标记比对覆盖率（见 scripts/check_passages.ts）。
+  body        String
+  /// 覆盖了几个词。生成时算好写进来，列表页直接显示，不用每次重算
+  wordCount   Int
+
+  @@unique([unitId, orderInUnit])
+  @@index([unitId])
 }
 
 /// 单词本身。与用户无关，所有用户共享

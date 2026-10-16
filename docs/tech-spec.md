@@ -97,6 +97,7 @@ IELTS Learning Tools/
 │   ├── PRD.md
 │   └── tech-spec.md
 ├── scripts/                           # 提取流水线（Python）
+│   ├── lib/passage-files.ts           # 短文 md 的解析（抽标记 + 按 --- 分篇，见 15.2）
 │   ├── extract_images.py              # PDF → data/pages/*.jpg（零依赖）
 │   ├── read_outline.py                # 读 PDF 书签（排查用，非必需）
 │   ├── ocr_pages.py                   # 页面图 → data/ocr/（依赖 rapidocr，见下）
@@ -107,7 +108,14 @@ IELTS Learning Tools/
 │   ├── verify_vocab.py                # 旁证：拿每页页脚索引条独立复核
 │   ├── fix_spacing.py                 # 修 OCR 单词粘连（ECDICT 当白名单重切，见 7.8）
 │   ├── update_spacing_db.ts           # 把修复结果原位写回库（不重灌，进度不丢）
-│   └── verify_spacing_db.ts           # 复核落库：进度完好 + 旧文本已清零
+│   ├── verify_spacing_db.ts           # 复核落库：进度完好 + 旧文本已清零
+│   ├── check_passages.ts              # 短文覆盖率校验：{{标记}} vs 该章词表（见 15.2）
+│   ├── seed_passages.ts               # content/passages/*.md → Passage 表（幂等）
+│   └── lib/passage-files.ts           # 短文 md 的解析（抽标记 + 按 --- 分篇）
+├── content/                           # 拓展阅读短文。**原创内容，进仓库**
+│   └── passages/
+│       ├── chapter-04.md              # 第 4 章太空探索，2 篇
+│       └── chapter-22.md              # 第 22 章时间日期，1 篇
 ├── data/                              # 提取产物（gitignore，体积大）
 │   ├── pages/                         # 334 张页面图
 │   ├── ocr/                           # 每页 OCR 的 .txt + .json（含坐标）
@@ -122,7 +130,7 @@ IELTS Learning Tools/
 │   └── ecdict.csv 或 stardict.db
 ├── prisma/
 │   ├── schema.prisma
-│   ├── migrations/                    # 2 个：init + add_progress_created_at
+│   ├── migrations/                    # 3 个：init + add_progress_created_at + add_passage
 │   ├── dev.db                         # SQLite 数据文件（gitignore）
 │   └── seed.ts                        # 读 words.clean.json 灌库
 ├── src/
@@ -134,6 +142,7 @@ IELTS Learning Tools/
 │   │   ├── units/page.tsx             # 单元列表（排成书末目录的样子）
 │   │   ├── study/page.tsx             # 学习/复习（核心）
 │   │   ├── spelling/page.tsx          # 拼写练习（独立页，2026-10-16 从 /study?spell=1 拆出）
+│   │   ├── reading/page.tsx           # 拓展阅读（按章读短文，见第 15 节）
 │   │   ├── stats/page.tsx             # 统计（阶段三）
 │   │   ├── settings/page.tsx          # 设置
 │   │   └── api/
@@ -145,6 +154,7 @@ IELTS Learning Tools/
 │   │   ├── WordCard.tsx               # 翻面卡片（正面单词 / 背面全展开，见 5.5）
 │   │   ├── StudySession.tsx           # 会话状态机（队列 + 评分 + 重入队）
 │   │   ├── SpellSession.tsx           # 拼写题面（受控，见 14.2）
+│   │   ├── PassageReader.tsx          # 短文正文 + 自测/对照两种模式（见 15.3）
 │   │   ├── RatingButtons.tsx          # 四档按钮 + 各自的下次间隔
 │   │   ├── SpeakButton.tsx            # 喇叭按钮
 │   │   ├── ProgressBar.tsx
@@ -158,6 +168,7 @@ IELTS Learning Tools/
 │   │   ├── session.ts                 # 会话队列 + 今日统计
 │   │   ├── stats.ts                   # 热力图 / 每日一句，见第 12 节
 │   │   ├── spelling.ts                # ★ 拼写比对（编辑距离 DP + 回溯，零依赖，见 14.1）
+│   │   ├── passages.ts                # ★ 短文解析：{{}} 切 token + 词典释义（见 15.3）
 │   │   ├── rating.ts                  # Rating 类型 + 四档文案（不碰数据库）
 │   │   ├── tts.ts                     # Web Speech API 封装
 │   │   ├── user.ts                    # getCurrentUser()（多用户预留位）
@@ -202,6 +213,25 @@ model Unit {
   name       String                      // 如 "自然地理"
   startPage  Int?                        // 书页码，便于和原书对照
   words      Word[]
+  passages   Passage[]
+}
+
+/// 拓展阅读：自己写的短文，把某一章的词嵌进中文叙事里（见第 15 节）。
+/// **内容原创，不是书中原文**——所以不受下面那笔版权风险的约束
+model Passage {
+  id          Int    @id @default(autoincrement())
+  unitId      Int
+  unit        Unit   @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  orderInUnit Int                        // 这一章的第几篇，1 起；章内按这个排序即阅读顺序
+  title       String
+  /// 正文。该章的词用 {{headword}} 包住——渲染成可点词块、自测时藏中文，
+  /// 校验脚本也靠这个标记比对覆盖率（见 scripts/check_passages.ts）
+  body        String
+  /// 覆盖了几个词。生成时算好写进来，列表页直接显示，不用每次重算
+  wordCount   Int
+
+  @@unique([unitId, orderInUnit])
+  @@index([unitId])
 }
 
 /// 单词本身。与用户无关，所有用户共享
@@ -1463,11 +1493,20 @@ if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) { … } else { extra }
 ```bash
 npm install
 npx prisma migrate dev     # 建表
-npm run db:seed            # 灌数据：22 单元 / 3580 词
+npm run db:seed            # 灌数据：22 单元 / 3580 词 + 拓展阅读短文（3 篇）
 npm run dev                # http://localhost:3000
 ```
 
 **日常**：只要 `npm run dev`。数据库是本地文件 `prisma/dev.db`，关掉重开进度还在。
+
+**写 / 改拓展阅读短文之后**（见第 15 节）
+
+```bash
+npm run check:passages     # 先校验覆盖率：{{标记}} vs 该章词表
+npm run db:seed:passages   # 再灌库。只动 Passage 表，不碰词表和进度
+```
+
+`npm run check:passages` 不通过就别灌——缺词和越界词都会列出来。
 
 **跑测试**
 
@@ -1475,7 +1514,7 @@ npm run dev                # http://localhost:3000
 npm test
 ```
 
-41 条，约 20 秒，`tsx --test --test-concurrency=1 tests/srs.test.ts tests/session.test.ts`。打的是独立的 `prisma/test.db`，**不碰 `dev.db`**；测试进程不写 `.next/`，**和正在跑的 dev server 不冲突**（不需要停 dev）。原理见第 8 节。
+**72 条，约 35 秒**，`tsx --test --test-concurrency=1 tests/spelling.test.ts tests/srs.test.ts tests/session.test.ts`。打的是独立的 `prisma/test.db`，**不碰 `dev.db`**；测试进程不写 `.next/`，**和正在跑的 dev server 不冲突**（不需要停 dev）。原理见第 8 节。
 
 **⚠️ 一个坑：`next build` 和 `next dev` 不能同时跑。**
 
@@ -2072,41 +2111,50 @@ Require stack: ... .next/server/webpack-runtime.js
 
 ---
 
-### 11.14 导航第五项「拼写练习」：只上桌面侧栏（2026-10-16）
+### 11.14 导航第五、六项「拼写练习」「拓展阅读」：只上桌面侧栏（2026-10-16）
 
-拼写从学习页拆成独立页 `/spelling` 时，侧栏要加第五项。**加不下的是窄屏顶栏，不是侧栏**——桌面侧栏 240px 宽、内容宽 208px，五项带图标竖排绰绰有余（每项实测 208px）。所以这一项的做法是给 `NAV` 加一个标记，**只在 rail 那一侧出现**。
+拼写从学习页拆成独立页 `/spelling` 时，侧栏要加第五项；同日拓展阅读做完，又加了第六项。**两项加不下的都是窄屏顶栏，不是侧栏**——桌面侧栏 240px 宽、内容宽 208px，六项带图标竖排绰绰有余（每项实测 208px）。所以做法是给 `NAV` 加一个标记，**只在 rail 那一侧出现**。
 
 ```ts
 const NAV: { href: string; label: string; icon: React.ReactNode; railOnly?: boolean }[] = [
   { href: "/",         label: "今日功课", icon: ICON.today },
   { href: "/units",    label: "章节词汇", icon: ICON.units },
   { href: "/spelling", label: "拼写练习", icon: ICON.spelling, railOnly: true },
+  { href: "/reading",  label: "拓展阅读", icon: ICON.reading,  railOnly: true },
   { href: "/stats",    label: "研习统计", icon: ICON.stats },
   { href: "/settings", label: "研习设置", icon: ICON.settings },
 ];
 
-// 窄屏顶栏直接不渲染——宽度预算付不起第五项
+// 窄屏顶栏直接不渲染——宽度预算付不起第五、六项
 if (!rail && item.railOnly) return null;
 ```
 
-`NAV.map` 的回调体为此从表达式体改成块体（要插那行 `if`）。新增一支铅笔图标，与既有四支同一套规格（16px、`fill="none"`、`stroke="currentColor"`、`strokeWidth 1.6`、`aria-hidden`）——写字，和日历 / 书 / 柱状 / 滑杆一眼分得开。
+> **两项排在「章节词汇」之后、统计之前**：它们同属「在词汇上做的练习」那一类，统计与设置仍在最后。
 
-**为什么不硬塞进顶栏**：11.7 那笔账算完只剩 21px（375px 下），第五项要多 **70px**（项 68 + 间隙 2），**溢出 49px**；320px 那道「藏印章省 44px」的兜底也补不平。要硬塞必须同时降字号、收内边距，还得把手机上唯一的品牌标识拿掉——为一个入口把整条栏改坏不划算。**这与 6.2 里错词本没做成导航项是同一条账**，那一条讲的就是窄屏顶栏，到现在一个像素没变，理由仍然成立。
+`NAV.map` 的回调体为此从表达式体改成块体（要插那行 `if`）。新增两支图标，与既有四支同一套规格（16px、`fill="none"`、`stroke="currentColor"`、`strokeWidth 1.6`、`aria-hidden`）：**铅笔**（写字）给拼写，**右上角折起的纸页 + 一行字**给拓展阅读——后者和「章节词汇」那本摊开的书分得开（那个是两页对开，这个是单页）。
 
-**`current` 判定不用动**：`/spelling` 不以 `/study` 开头，走的是 `pathname` 那条路，`active` 天然命中新项；`/spelling?unit=N` 也一样——它就是这个板块本身，不像 `/study?unit=N` 那样要按来源折算归属。
+**为什么不硬塞进顶栏**：11.7 那笔账算完只剩 21px（375px 下），每多一项要多 **70px**（项 68 + 间隙 2），**第五项就溢出 49px**；320px 那道「藏印章省 44px」的兜底也补不平。要硬塞必须同时降字号、收内边距，还得把手机上唯一的品牌标识拿掉——为入口把整条栏改坏不划算。**这与 6.2 里错词本没做成导航项是同一条账**，那一条讲的就是窄屏顶栏，到现在一个像素没变，理由仍然成立。
+
+> **第六项加进来之后，375px 那笔账一个数都没动**——因为 `railOnly` 让顶栏那侧压根不渲染它。实测 `nav` 仍是 278px、`scrollWidth` 仍是 375（见下表）。
+
+**`current` 判定不用动**：`/spelling` 和 `/reading` 都不以 `/study` 开头，走的是 `pathname` 那条路，`active` 天然命中各自那项；`/reading?unit=N` 也一样——它就是这个板块本身，不像 `/study?unit=N` 那样要按来源折算归属。
+
+**这两项的窄屏入口都在章节页**（`units/page.tsx` 每行那两颗按钮，见 15.5）：那一页本来就是「挑一章」的地方，从这里进正好落在你正看着的这一章，比导航栏那个不带参数的入口还准。拼写另在首页多一条；拓展阅读是独立的读物，不进首页那条动线。
 
 #### 验证（1280×800 / 375×812）
 
 | 项 | 1280×800 | 375×812 |
 |---|---|---|
-| 导航项数 | **5**（rail），每项 208px，当前项「拼写练习」在第三位 | **4**（bar），无「拼写练习」 |
-| 顶栏/侧栏宽度 | 侧栏 240px、`display:flex` | 导航 278px + 印章 40 = **318px**（加间隙 4 = 322px，与预算一致） |
+| 导航项数 | **6**（rail），每项 208px，顺序：今日功课/章节词汇/拼写练习/拓展阅读/研习统计/研习设置 | **4**（bar），无「拼写练习」「拓展阅读」 |
+| 顶栏/侧栏宽度 | 侧栏 240px、`display:flex` | 导航实测 **278px** + 印章 40 = 318px（加间隙 4 = 322px，与预算一致） |
 | 横向溢出 | 0 | **0**（`scrollWidth` 375 = `innerWidth`） |
-| `aria-current` | `/spelling` 下「拼写练习」= `page` | — |
+| `aria-current` | `/reading` 下「拓展阅读」= `page` | — |
+
+第六项加进来时复测过：`nav` 仍是 278px、`scrollWidth` 仍是 375——顶栏那侧一项没多渲染。
 
 `AppShell.tsx` 未改动（侧栏宽度与断点都没动）。
 
-> **连带的一个数变了**：`force-dynamic` 的页面从五个变成**六个**（多了 `/spelling`）。`Nav.tsx` 里用 `useSearchParams()` 只要「没有静态预渲染」这个前提成立就安全，加一页不改变这一点——但代码注释里写死的那个数字要跟着改（已改）。
+> **连带的一个数变了**：`force-dynamic` 的页面从五个变成**七个**（`/spelling`、`/reading`）。`Nav.tsx` 里用 `useSearchParams()` 只要「没有静态预渲染」这个前提成立就安全，加页不改变这一点——但代码注释里写死的那个数字要跟着改（已改）。
 
 ---
 
@@ -2621,4 +2669,141 @@ if (params.spell) redirect(validUnitId ? `/spelling?unit=${validUnitId}` : "/spe
 > **踩了一个 dev server 的坑，记下来**：走查中途 `<main>` 停在 `loading.tsx` 的骨架屏上，真页面渲染成一棵挂在 `<body>` 下、**不在 `<main>` 里**的树——于是 `document.querySelector('main').innerText` 读到「正在加载…」而内容其实已经渲染好了。**只有重启 dev server 能清掉**（full reload 也卡着），不是代码问题。
 
 **明确没做**（这一轮）：不动 `lib/session.ts`（`buildSpellSession` 与 `BuildOptions.spell` 原样保留）、不动 `lib/spelling.ts`、不动 `SpellSession.tsx`、不动任何测试；**不提高 `SPELL_LIMIT`**（已学词超过 50 时队列仍只给 50 个，这是 6.4 里写明的现状）；不做下拉 / 横向滚动 / 「更多」菜单这类第二套导航；不给窄屏顶栏加第五项；不新增颜色 / 圆角 / 字号令牌，不引依赖。**`app/units/page.tsx` 那条章节页链接保留**——它是「从正看着的这一章直接进去」的深链，和同一行上面那条 `/study?unit=N` 同类，不是「同一目的地的第二条路」（当初删首页两个快捷入口，删的是和导航**完全等价**的 `词库`/`设置`）。
+
+---
+
+## 15. 拓展阅读（`/reading`，2026-10-16 · 试点两章）
+
+**问题**：词卡把词一个个讲清楚，但「学会一个词」和「在一句话里认出它」是两件事。这一页把某一章的词嵌进中文原创短文，让词回到句子里。
+
+### 15.1 形态选型：为什么是「自己写」而不是「把书上素材串起来读」
+
+先做的是另一案——把书里已有的段落素材按章串起来当阅读材料。**用真实数据否掉它的三条理由**：
+
+| | 实测 |
+|---|---|
+| 素材不是连贯文章 | 多数是词根记忆法那类条目，本身不构成可读的叙事 |
+| 与词卡背面高度重合 | 那些素材正是学习卡背面已经在显示的内容——**是新容器，不是新信息** |
+| 跨章串入 | 14 条（含 `Chapter` 字样，可识别），是 OCR 没切干净 |
+| 覆盖 | 464 词 / 3580（**13%**），每章 2~65 条，中位 17——多数章根本凑不出一篇 |
+
+改成自写之后还多了一条：**版权**。`schema.prisma` 里 `bookMeaning` / `collocation` / `derived` / `etymology` / `cultureNote` 有一段注释标明是「书中原创内容，受版权保护」，`plan.md` 第 6 节把「公开部署」标为**高**风险。自写短文 + 词义取 ECDICT 的 `meaningCn`（词典）而不是 `bookMeaning`（书上原话），**不新增版权暴露面**。
+
+### 15.2 内容形态与两个脚本
+
+**文件**：`content/passages/chapter-NN.md`（一位数补零：`chapter-04.md`）。一个文件 = 一章，`---` 分成篇：
+
+```markdown
+# 观测夜
+
+……天文学家用 {{telescope}} 对准夜空，{{observatory}} 里……
+
+---
+
+# 断电之后
+
+……
+```
+
+`{{headword}}` 是**唯一的标记语法**，一个语法同时解决四件事：渲染成可点词块、自测模式藏中文、**覆盖率能脚本自动校验**、存储只要一个 `String` 字段（不必给每个词建关联表）。标记允许连字符（`up-to-date` 这种）。解析器在 `scripts/lib/passage-files.ts`，两个脚本共用。
+
+**`npm run check:passages`**（`scripts/check_passages.ts`，长期工具）：从 md 抽标记与该章词表比对，报缺词 / 越界词，有失败就 `exit 1`。当前输出：
+
+```
+第 4 章 太空探索 —— 2 篇
+  1. 观测夜，标记 38 处 / 36 词，正文 888 字
+  2. 断电之后，标记 37 处 / 37 词，正文 922 字
+  合计覆盖 73/73（100.0%）
+  ✓
+第 22 章 时间日期 —— 1 篇
+  1. 守钟人，标记 52 处 / 51 词，正文 1238 字
+  合计覆盖 51/51（100.0%）
+  ✓
+全部通过
+```
+
+> **判据落在「章」，不落在「篇」**：一章拆几篇时篇与篇之间怎么分词是写作自由，但这一章的词必须被某篇标到。**这是 84 篇能批量写下去的前提**——没有这条校验，只能靠人眼核。
+>
+> 标记数与词数不等（38 处 / 36 词）是因为同一个词在一篇里出现几次；`wordCount` 存的是 `new Set(tags).size`。
+
+**`npm run db:seed:passages`**（`scripts/seed_passages.ts`）：把 md 灌进 `Passage` 表，导出 `seedPassages(prisma)` 供 `prisma/seed.ts` 末尾调用（`main().then(() => seedPassages(prisma))`），所以 `npm run db:seed` 一次就能把词表和短文一起灌好。**幂等**：每章在 `$transaction` 里先 `passage.deleteMany({ where: { unitId } })` 再 `createMany`——某章从 3 篇改成 2 篇时不会留孤儿。脚本底部用 `process.argv[1]` 判断是否被直接运行，避免被 import 时重复执行。
+
+**粒度**：每篇 40~60 词。全书 3580 词 / 22 章，按这个粒度约 **84 篇**（每篇 80 词则约 55 篇）。「每章一篇」不成立：最大第 21 章 408 词、第 5 章 395 词；最小第 22 章 51 词，一篇正好。**允许缺 2~3 个生僻词**——为塞进一个词把句子写坏更亏，校验脚本会把缺的列出来让人判断。
+
+### 15.3 渲染：`lib/passages.ts` + `PassageReader.tsx`
+
+**解析在服务端**（`src/lib/passages.ts`，纯函数）：把 `body` 切成 `Block[]`（段落 × token），客户端组件只拿现成结构做交互——**`{{}}` 的语法只在这一个文件里认，将来改语法不用动组件**。
+
+```ts
+export type Token = { t: "text"; v: string } | { t: "word"; v: string; cn: string };
+export type Block = Token[];
+
+export function shortMeaning(meaningCn: string): string   // 取第一行、去词性前缀
+export function toParagraphs(body, meaningOf): Block[]
+```
+
+两个实现细节：
+
+- **每段重起一个正则**（`new RegExp(TAG.source, "g")`）。带 `g` 的标志的正则 `exec` 会在 `lastIndex` 上记状态，跨段复用会漏标记。
+- **`meaningOf` 由调用方给**，查不到返回空串——词块照常渲染，只是点开没内容，不报错（同学习页「字段缺了不显示占位符」那条）。
+
+**`PassageReader.tsx`（client）只有一处客户端状态**：中文是「藏着」还是「露着」。
+
+| 模式 | 表现 |
+|---|---|
+| **自测**（默认） | 中文全藏，点哪个词出哪个 |
+| **对照阅读** | 中文直接跟在词后 |
+
+**默认自测**的理由就是这一页存在的理由：一进来什么都摊开，和直接看学习卡背面没区别，眼睛会顺着中文滑过去。点开的词按**词面**存在 `Set<string>` 里（不按位置）——同一个词在一篇里出现几次，点开一处全露，不然整篇每处都要点一遍。
+
+词块用 `<button>` 而不是 `<span onClick>`：键盘也要能走到（Tab 停在词上、回车看中文），这是 PRD 第 3 节那条无障碍承诺的一部分。
+
+> **词块的中文取整行词典释义**（用户 2026-10-16 定）：`observatory` → 「天文台, 气象台, 了望台」。多义词会带一串、看着偏长，但**取第一个义项有取错文中那个意思的风险**——宁可长。`shortMeaning()` 只做两下：取第一行、去开头的词性前缀。查不到时显示 `—`。
+
+### 15.4 路由 `src/app/reading/page.tsx`
+
+server component、`force-dynamic`，取参口径照抄 `study/page.tsx` 与 `spelling/page.tsx`（`params.unit` → `Number` → `Number.isInteger` 校验），不另造一套。
+
+- **章 chip 只列有短文的章**（`_count.passages > 0`）。短文是逐章补的，列了没写的章只会撞空态。chip 是纯 `<Link>`、零 JS，与 `/stats`、「拼写范围 chip」同一套做法。
+- **不带 `unit` 时落在第一个有短文的章**，从导航进来直接有东西读，不用先在一片空章里挑。
+- 查该章所有词的 `headword → shortMeaning(meaningCn)` 建 `Map`，再逐篇 `toParagraphs(p.body, (h) => map.get(h) ?? "")`，把 `{ id, title, blocks }[]` 喂给 `PassageReader`。
+- 一页读完整章（**不按篇分页**）——章与篇的区别是写作粒度，不是浏览粒度。
+
+**不吃配额、不写进度**：这一页不读 `UserWordProgress`、不落 `ReviewLog`，是所有页面里唯一与进度无关的学习页。它不是检验，是读物。
+
+### 15.5 章节页那两颗按钮
+
+`units/page.tsx` 每行右侧从一颗按钮变成**一组两颗**（`flex gap-2`），两个「有没有」是独立条件：
+
+| 按钮 | 渲染条件 | 链接 |
+|---|---|---|
+| 拼写检验 | `started > 0`（这一章学过词） | `/spelling?unit=N` |
+| 拓展阅读 | `hasPassage`（这一章写过短文） | `/reading?unit=N` |
+
+两颗都**每一行都渲染**，没得做的用同尺寸的压暗 `<span>` 占位——22 行里只有几行有按钮的话右边缘会参差，那一列就读不出「这是同一类东西」（拼写那颗的原有理由，这里照搬）。占位不做成链接：那种章点进去只会撞空态。
+
+> **窄屏也是并排**（`gap-2`，实测 52→198px，375px 下宽裕）。拆成上下两行会把每章撑高一行，22 章下来整页长出一屏。
+
+### 15.6 验证（2026-10-16）
+
+| 项 | 结果 |
+|---|---|
+| `tsc --noEmit` | 退出码 0 |
+| `npm test` | **72 条全绿**（这次没动被测代码，属回归确认） |
+| `prisma/dev.db` | 跑测试前后逐位一致（md5 `3653d71336e4454474d617eb196924dd`）——测试走 `prisma/test.db` |
+| `npm run check:passages` | 第 4 章 73/73、第 22 章 51/51，全部通过 |
+| `/reading` | h1 + 两个章 chip（第 4 章 2 篇 / 第 22 章 1 篇）+ 默认落在第 4 章的两篇；**页面里没有残留 `{{`** |
+| 默认自测 | 75 个词块**全部不带中文** |
+| 点词 | `observatory` → 「天文台, 气象台, 了望台」，且**按词面**全篇同词一起露 |
+| 切「对照阅读」 | 75 / 75 个词块全部显示中文；切回自测只留已点开的 |
+| 空态 | `/reading?unit=1`（没写短文的章）→ 「第 1 章还没有短文」，**章 chip 仍在上方可换** |
+| 375×812 | 顶栏仍 **4 项**（无拼写、无拓展阅读）、`nav` 实测 **278px**、`scrollWidth` = 375 **零溢出**；章节页两颗按钮 52→198px、22 行全渲染 |
+| 1280×800 | 侧栏 **6 项**（顺序见 11.14）、`/reading` 高亮 `aria-current="page"`；章节行高 **53px** 未变、按钮组右贴 8px |
+| 不回归 | 13 条路由（含 `/spelling?unit=4`、`/study?weak=1`、`/reading?unit=22` 等）全部 200 |
+
+> **验证方法上一个坑**：Browser 面板收起时页面**不做 hydration**（`visibilityState === 'hidden'`，页面里 h1 / button 都查不到 `__reactFiber$`，点词、切模式全无反应；`setInterval` 却照常跑，所以不是「冻结」）。先调一次 `preview_screenshot` 让面板变成可见，hydration 立刻完成。**量 DOM 结构（导航项、路由内容）不受影响，量交互和 rect 才受影响。**
+
+### 15.7 明确没做
+
+不记录阅读进度（读过哪篇、读了几遍都不存）；不做收藏 / 生词本联动；不做音频朗读；不做逐句翻译或语法标注；**不写第 4、22 章以外的章**（试点范围，其余 20 章约 80 篇待补）；不给窄屏顶栏加第六项；不新增颜色 / 圆角 / 字号令牌，不引依赖。`Passage` 表**不做版本号**——短文改了就重灌，没有需要保留的历史。
 

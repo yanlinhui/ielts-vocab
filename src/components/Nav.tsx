@@ -68,6 +68,24 @@ const ICON = {
       <path d="M8.2 5.5 10.6 7.9" />
     </svg>
   ),
+  // 拓展阅读 —— 一张右上角折起的纸，加一行字。和「章节词汇」那本摊开的书
+  // 分得开：那个是两页对开，这个是单页；折角和那行字在 16px 下也还看得出
+  reading: (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="h-4 w-4 shrink-0"
+    >
+      <path d="M3.4 2.6h5l3.6 3.6v7a.8.8 0 0 1-.8.8H3.4a.8.8 0 0 1-.8-.8V3.4a.8.8 0 0 1 .8-.8z" />
+      <path d="M8.4 2.6v3.6h3.6" />
+      <path d="M5.4 10.6h4.8" />
+    </svg>
+  ),
   // 研习统计 —— 三根高低不同的竖柱 + 一条基线。折线在 16px 下会糊成一团，
   // 柱状读得出高低；和设置那两根滑杆也一眼分得开
   stats: (
@@ -115,17 +133,22 @@ const ICON = {
 //
 // 收完的算术：印章 40 + 品牌↔导航间隙 4 + 导航 278（= 68×4 + 2×3）= 322px，
 // 375px 下余 21px、360px 下余 6px。320px 由 AppShell 的 `max-[359px]:hidden`
-// 兜底（藏掉印章省下 44px）。桌面侧栏 240px 宽、内容宽 208px，五项带图标竖排
+// 兜底（藏掉印章省下 44px）。桌面侧栏 240px 宽、内容宽 208px，六项带图标竖排
 // 绰绰有余，一个字都不用动。
 //
 // ⚠️ 加项前那一版是「三项 + 印章 = 292px」，现在那个数已经不对了。
 //
-// **拼写练习（第五项）只上 rail。** 窄屏顶栏加不下：四项是 322px，第五项要多
-// 70px（项 68 + 间隙 2），375px 下溢出 49px；320px 那道藏印章的兜底省下 44px
-// 也补不平。要硬塞就得同时降字号、收内边距，还得把手机上唯一的品牌标识拿掉——
-// 为一个入口把整条栏改坏不划算。窄屏改从首页「拼写练习（N 个学过的词）」和
-// 章节页每行那条链接进，这两条本来就在。桌面侧栏没这个问题，所以只在 rail
-// 这一侧多一项（这也是当初错词本没做成导航项的同一条账，见 PRD 2.6）。
+// **拼写练习（第五项）和拓展阅读（第六项）都只上 rail。** 窄屏顶栏加不下：
+// 四项是 322px，每多一项要多 70px（项 68 + 间隙 2），375px 下第五项就溢出 49px；
+// 320px 那道藏印章的兜底省下 44px 也补不平。要硬塞就得同时降字号、收内边距，
+// 还得把手机上唯一的品牌标识拿掉——为入口把整条栏改坏不划算。
+//
+// 这两项的窄屏入口都在**章节页每一行**那颗按钮上（`/spelling?unit=N` 与
+// `/reading?unit=N`）：那一页本来就是「挑一章」的地方，从这里进正好落在你正在
+// 看的这一章，比导航栏那个不带参数的入口还准。拼写另在首页多一条（「拼写练习
+// （N 个学过的词）」）——首页那条动线本来就是复习，拼写是它的延伸；拓展阅读是
+// 独立的读物，不进首页。桌面侧栏没这个问题，所以只在 rail 这一侧多两项。
+// （这也是当初错词本没做成导航项的同一条账，见 PRD 2.6。）
 const NAV: {
   href: string;
   label: string;
@@ -135,8 +158,9 @@ const NAV: {
 }[] = [
   { href: "/", label: "今日功课", icon: ICON.today },
   { href: "/units", label: "章节词汇", icon: ICON.units },
-  // 排在「章节词汇」后面：这两项是「在词汇上做的练习」，统计和设置仍在最后
+  // 这两项排在「章节词汇」后面：都是「在词汇上做的练习」，统计和设置仍在最后
   { href: "/spelling", label: "拼写练习", icon: ICON.spelling, railOnly: true },
+  { href: "/reading", label: "拓展阅读", icon: ICON.reading, railOnly: true },
   { href: "/stats", label: "研习统计", icon: ICON.stats },
   { href: "/settings", label: "研习设置", icon: ICON.settings },
 ];
@@ -197,7 +221,7 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
   return (
     <nav className={rail ? "flex flex-col" : "flex items-center gap-0.5"}>
       {NAV.map((item) => {
-        // `railOnly` 那几项在窄屏顶栏直接不渲染——宽度预算付不起第五项，
+        // `railOnly` 那几项在窄屏顶栏直接不渲染——宽度预算付不起第五、六项，
         // 算术见上面 NAV 那段
         if (!rail && item.railOnly) return null;
 
@@ -207,7 +231,7 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
 
         // 上色用的值：正在路上时**只亮目标那一项**，落地后再交还给真实的当前页。
         // 不能写成 `active || item.href === pending`——从点击到 pathname 追上来的这
-        // 60~110ms 里，新旧两项会同时亮着。`pending` 里存的只会是 NAV 那四个 href，
+        // 60~110ms 里，新旧两项会同时亮着。`pending` 里存的只会是 NAV 那六个 href，
         // 所以这里直接比字符串就够。
         const lit = pending ? item.href === pending : active;
 

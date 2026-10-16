@@ -15,6 +15,7 @@
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { seedPassages } from "../scripts/seed_passages";
 
 const prisma = new PrismaClient();
 
@@ -174,6 +175,7 @@ async function main() {
 }
 
 main()
+  .then(() => seedPassages(prisma))
   .catch((e) => {
     console.error(e);
     process.exit(1);
