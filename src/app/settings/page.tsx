@@ -17,7 +17,7 @@ export default async function SettingsPage() {
     dailyNewLimit: settings?.dailyNewLimit ?? 20,
     dailyReviewLimit: settings?.dailyReviewLimit ?? 200,
     accent: (settings?.accent === "us" ? "us" : "uk") as Accent,
-    autoSpeak: settings?.autoSpeak ?? false,
+    autoSpeak: settings?.autoSpeak ?? true,
   };
 
   return (

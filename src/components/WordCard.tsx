@@ -101,22 +101,54 @@ export default function WordCard({
     };
   }, [flipped]);
 
-  // 开了「翻面自动朗读」的话，翻到背面时读一次。
+  // 自动朗读：**每逢卡片转到正面（单词那面）就读一遍**。
+  //
+  // 三个时点都算「转到正面」：这张卡第一次出现（换词后必然经过）、从背面翻回
+  // 正面、在学习页点开那个开关。翻到背面看释义时不读——那时眼睛在中文上，再念
+  // 一遍英文只是噪音；翻回正面时重读，正好用来印证刚才记下的音形。
+  //
+  // 所以条件是「此刻正面在显示」，而不是「这张卡读过没有」——后者会让翻回正面
+  // 的这一次静默掉。
+  //
+  // 依赖里留着 autoSpeak 是故意的：开关一翻这个 effect 就重跑，正面时当前词立刻
+  // 发音——不用在开关的 handler 里另写一次 speak，也就不会出现「开关和卡片各读
+  // 一遍」。
+  //
+  // 换词之所以必然读到：StudySession 拿 wordId+rated 当 key，换词等于重建组件。
   // 首次朗读仍需用户点过一次（浏览器策略），所以这只是省一次点击。
+  const spokenRef = useRef<string | null>(null);
   useEffect(() => {
-    if (flipped && autoSpeak) speak(item.headword, { accent });
-  }, [flipped, autoSpeak, accent, item.headword]);
+    // 关掉开关、或卡片正停在背面 —— 都清空记录，等正面再显示时补读
+    if (!autoSpeak || flipped) {
+      spokenRef.current = null;
+      return;
+    }
+    // 同一个正面只读一次。开发模式下 React StrictMode 会把 effect 跑两遍，少了这道
+    // 守卫就会读两遍（第二遍 cancel 掉第一遍）。生产构建没有这个问题，但这个项目
+    // 本地跑的一直是 dev。
+    if (spokenRef.current === item.headword) return;
+    spokenRef.current = item.headword;
+    speak(item.headword, { accent });
+  }, [autoSpeak, accent, item.headword, flipped]);
 
-  // 键盘：空格翻面，1~4 评分。只在已翻面时接受评分，
-  // 免得手快把没看到的词评了。
+  // 键盘：空格翻面，S 发音，1~4 评分。
+  // 评分只在已翻面时接受，免得手快把没看到的词评了；发音不设这个限制——
+  // 正反两面都可能想重听。
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+      // 带修饰键的组合让给浏览器：Ctrl+S 存网页、Ctrl+R 刷新、Cmd+数字切标签
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       if (e.code === "Space" || e.key === "Enter") {
         e.preventDefault();
         setFlipped((f) => !f);
+        return;
+      }
+      if (e.key === "s" || e.key === "S") {
+        e.preventDefault();
+        speak(item.headword, { accent });
         return;
       }
       if (flipped && !busy && ["1", "2", "3", "4"].includes(e.key)) {
@@ -126,7 +158,7 @@ export default function WordCard({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flipped, busy, onRate]);
+  }, [flipped, busy, onRate, item.headword, accent]);
 
   const meaning = item.meaningCn || item.bookMeaning || "（无释义）";
   const hasDetail = Boolean(
@@ -301,7 +333,7 @@ export default function WordCard({
 
       {!flipped && (
         <p className="text-center text-xs text-[var(--color-muted)]">
-          空格键翻面 · 翻面后按 1~4 评分
+          空格翻面 · S 发音 · 翻面后按 1~4 评分
         </p>
       )}
     </div>

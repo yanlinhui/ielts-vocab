@@ -27,7 +27,7 @@ export default async function StudyPage({
     <StudySession
       initialQueue={queue}
       accent={accent}
-      autoSpeak={settings?.autoSpeak ?? false}
+      initialAutoSpeak={settings?.autoSpeak ?? true}
     />
   );
 }

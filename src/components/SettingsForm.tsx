@@ -95,9 +95,11 @@ export default function SettingsForm({ initial }: { initial: SettingsValues }) {
           className="mt-0.5 accent-[var(--color-brand)]"
         />
         <span>
-          <span className="text-sm">翻面时自动朗读</span>
+          <span className="text-sm">转到单词面时自动朗读</span>
           <span className="mt-0.5 block text-xs text-[var(--color-muted)]">
-            手机浏览器要求首次朗读由点击触发，所以打开后仍需点一次喇叭才会生效。
+            换到新词、或从背面翻回正面时会读一遍；看释义的背面不读。
+            学习页上也有同一个开关，背词时随手可切。手机浏览器要求首次朗读由点击触发，
+            所以刚打开时可能不响，点一次喇叭或那个开关就会生效。
           </span>
         </span>
       </label>

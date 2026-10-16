@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import WordCard from "./WordCard";
 import ProgressBar from "./ProgressBar";
 import { isWithinSession } from "@/lib/format";
 import type { QueueItem } from "@/lib/session";
 import type { Rating } from "@/lib/rating";
-import type { Accent } from "@/lib/tts";
+import { isSupported, type Accent } from "@/lib/tts";
 
 interface ReviewResponse {
   nextDueAt: string;
@@ -25,17 +25,20 @@ interface ReviewResponse {
 export default function StudySession({
   initialQueue,
   accent,
-  autoSpeak = false,
+  initialAutoSpeak = false,
 }: {
   initialQueue: QueueItem[];
   accent: Accent;
-  autoSpeak?: boolean;
+  initialAutoSpeak?: boolean;
 }) {
   const [queue, setQueue] = useState<QueueItem[]>(initialQueue);
   const [rated, setRated] = useState(0);
   const [remembered, setRemembered] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 自动朗读。初值来自库里那行设置，改动会写回库——下次进门就是上次的选择。
+  // 由这里持有而不是下沉进 WordCard：开关住在卡片外面，两者得共用同一份状态。
+  const [autoSpeak, setAutoSpeak] = useState(initialAutoSpeak);
 
   // 这张卡显示了多久，作为 elapsedMs 上报，用于以后分析
   const shownAt = useRef<number>(Date.now());
@@ -82,6 +85,24 @@ export default function StudySession({
     },
     [busy, queue],
   );
+
+  // 开关：先改本地状态（PRD 3 要求瞬时，不等网络），再后台落库；失败就弹回去。
+  // 只发 autoSpeak 一个字段——/api/settings 是逐字段处理的，不用把其余三项一起回写。
+  const toggleAutoSpeak = useCallback(async () => {
+    const next = !autoSpeak;
+    setAutoSpeak(next);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoSpeak: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setAutoSpeak(!next);
+      setError("发音设置没保存上，已切换回去");
+    }
+  }, [autoSpeak]);
 
   if (queue.length === 0) {
     const rate = rated > 0 ? Math.round((remembered / rated) * 100) : 0;
@@ -149,7 +170,10 @@ export default function StudySession({
         busy={busy}
       />
 
-      <div className="text-center">
+      {/* 开关放在卡片外、放这一行：紧挨「先退出」这个边角动作，不占卡片正面
+          （PRD 1.3 一次只做一件事），也不用翻面就能切。 */}
+      <div className="flex items-center justify-between gap-3">
+        <AutoSpeakToggle on={autoSpeak} onToggle={toggleAutoSpeak} />
         <Link
           href="/"
           className="text-xs text-[var(--color-muted)] underline-offset-2 hover:underline"
@@ -158,5 +182,52 @@ export default function StudySession({
         </Link>
       </div>
     </div>
+  );
+}
+
+/**
+ * 自动朗读开关。
+ *
+ * 用 role="switch" 而不是 button + aria-pressed：它是个开关，读屏该念「开 / 关」，
+ * 而不是「按下 / 未按下」。状态除了颜色还写了「开 / 关」两个字——只靠颜色区分的话，
+ * 色觉障碍的人看不出当前是哪一档。
+ */
+function AutoSpeakToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  // isSupported() 读的是 window，服务端渲染时不能调，首帧先当作支持（同 SpeakButton）
+  const [supported, setSupported] = useState(true);
+  useEffect(() => setSupported(isSupported()), []);
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label="新词自动发音"
+      disabled={!supported}
+      title={supported ? "转到单词面时自动朗读" : "这个浏览器不支持语音合成"}
+      onClick={onToggle}
+      className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-[var(--radius-chip)] border px-2.5 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+        on
+          ? "border-[var(--color-brand)] bg-[color-mix(in_srgb,var(--color-brand)_8%,var(--color-surface))] text-[var(--color-brand)]"
+          : "border-[var(--color-line)] text-[var(--color-muted)] hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
+      }`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-3.5 w-3.5"
+        aria-hidden="true"
+      >
+        <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+        <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+        <path d="M18.5 6a9 9 0 0 1 0 12" />
+      </svg>
+      自动发音
+      <span className="font-medium">{on ? "开" : "关"}</span>
+    </button>
   );
 }
