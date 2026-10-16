@@ -18,16 +18,26 @@ export default async function StudyPage({
   const accent: Accent = settings?.accent === "us" ? "us" : "uk";
 
   const unitId = params.unit ? Number(params.unit) : undefined;
-  const queue = await buildSession(
-    user.id,
-    unitId && Number.isInteger(unitId) ? { unitId } : {},
-  );
+  const validUnitId = unitId && Number.isInteger(unitId) ? unitId : undefined;
+
+  // 章节模式下顺便把章名取出来——队列里只有「还没学过的词」，整章学完时队列是
+  // 空的，没有词卡可看，那个空状态得靠这里拿到的章名才说得清是「哪一章学完了」。
+  const [queue, unit] = await Promise.all([
+    buildSession(user.id, validUnitId ? { unitId: validUnitId } : {}),
+    validUnitId
+      ? prisma.unit.findUnique({
+          where: { id: validUnitId },
+          select: { chapterNo: true, name: true },
+        })
+      : Promise.resolve(null),
+  ]);
 
   return (
     <StudySession
       initialQueue={queue}
       accent={accent}
       initialAutoSpeak={settings?.autoSpeak ?? true}
+      unit={unit}
     />
   );
 }

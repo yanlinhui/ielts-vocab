@@ -26,10 +26,16 @@ export default function StudySession({
   initialQueue,
   accent,
   initialAutoSpeak = false,
+  unit = null,
 }: {
   initialQueue: QueueItem[];
   accent: Accent;
   initialAutoSpeak?: boolean;
+  /**
+   * 章节专项进来时带上这一章。**只给「整章已经学完」那个空状态用**——那种情况
+   * 队列里一个词都没有，没有词卡可以读出章名，只能靠这里传。每日动线传 null。
+   */
+  unit?: { chapterNo: number; name: string } | null;
 }) {
   const [queue, setQueue] = useState<QueueItem[]>(initialQueue);
   const [rated, setRated] = useState(0);
@@ -105,11 +111,23 @@ export default function StudySession({
   }, [autoSpeak]);
 
   if (queue.length === 0) {
+    // 三种空法要分清，别混成一句：
+    //   1. 章节专项进门就空 —— 这一章的词都已经学过了（一次都还没答）
+    //   2. 答过若干之后抽干 —— 本轮做完
+    //   3. 每日动线进门就空 —— 今天没有待办的词
+    const chapterDone = rated === 0 && unit !== null;
     const rate = rated > 0 ? Math.round((remembered / rated) * 100) : 0;
+
     return (
       <div className="flex flex-col items-center gap-4 rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-center">
-        <h1 className="font-serif text-xl font-semibold">这一轮完成了</h1>
-        {rated > 0 ? (
+        <h1 className="font-serif text-xl font-semibold">
+          {chapterDone ? `第 ${unit?.chapterNo} 章 ${unit?.name} 已经学完` : "这一轮完成了"}
+        </h1>
+        {chapterDone ? (
+          <p className="text-sm text-[var(--color-muted)]">
+            这一章的词都学过了。想回顾的话回首页——这一章的复习按到期时间在「今日功课」里走。
+          </p>
+        ) : rated > 0 ? (
           <p className="text-sm text-[var(--color-muted)]">
             本次作答 {rated} 次，其中 {remembered} 次记住了（{rate}%）
           </p>
@@ -119,17 +137,19 @@ export default function StudySession({
           </p>
         )}
         <div className="mt-2 flex gap-3">
+          {/* 学完一章的人下一步是挑下一章，所以那一态的主动作是去章节列表；
+              另外两态是「收工」，主动作回首页。 */}
           <Link
-            href="/"
+            href={chapterDone ? "/units" : "/"}
             className="rounded-[var(--radius-control)] bg-[var(--color-brand)] px-4 py-2.5 text-sm font-medium text-[var(--color-on-brand)] transition hover:opacity-90"
           >
-            回首页
+            {chapterDone ? "浏览章节词汇" : "回首页"}
           </Link>
           <Link
-            href="/units"
+            href={chapterDone ? "/" : "/units"}
             className="rounded-[var(--radius-control)] border border-[var(--color-line)] px-4 py-2.5 text-sm transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
           >
-            浏览章节词汇
+            {chapterDone ? "回首页" : "浏览章节词汇"}
           </Link>
         </div>
       </div>
