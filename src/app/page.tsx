@@ -57,7 +57,11 @@ export default async function HomePage() {
           <div className="flex items-baseline justify-between text-sm">
             <span>今日新词</span>
             <span className="text-[var(--color-muted)]">
-              {stats.newDone} / {stats.newLimit}
+              {/* 分子要夹到分母。章节专项（/study?unit=N）**不受每日配额约束**，
+                  它学的新词照样写进度行、照样计入当天的 newDone，于是这里会拿到
+                  「31 / 20」这种反直觉的入参。这一行的语义是「今日配额完成度」，
+                  超出的部分封顶示人；格子那边同理（AnswerSheet 内部也夹）。 */}
+              {Math.min(stats.newDone, stats.newLimit)} / {stats.newLimit}
             </span>
           </div>
           {/* 新词这条走答题卡式的方格，不走进度条：它的配额是固定的（设置里的

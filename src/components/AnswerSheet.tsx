@@ -16,24 +16,29 @@ import ProgressBar from "./ProgressBar";
 const MAX_CELLS = 24;
 
 export default function AnswerSheet({ done, total }: { done: number; total: number }) {
+  // done 可能大于 total：章节专项模式不受配额约束，但它学的新词照样计入当日
+  // 配额，于是会拿到「31 / 20」这样的入参。配额进度封顶在满格，别让
+  // aria-label 报出一个分子大于分母的数（格子本来就全满，不受影响）。
+  const shown = Math.min(done, total);
+
   if (total < 1 || total > MAX_CELLS) {
-    return <ProgressBar done={done} total={total} tone="seal" />;
+    return <ProgressBar done={shown} total={total} tone="seal" />;
   }
 
   return (
     <div
       role="progressbar"
-      aria-label={`今日新词 ${done} / ${total}`}
-      aria-valuenow={Math.min(done, total)}
+      aria-label={`今日新词 ${shown} / ${total}`}
+      aria-valuenow={shown}
       aria-valuemin={0}
       aria-valuemax={total}
       className="flex flex-wrap gap-1.5"
     >
       {Array.from({ length: total }, (_, i) => {
-        const filled = i < done;
+        const filled = i < shown;
         // 还没做、但就是下一个该做的那格。给个描边而不是填色——
         // 填色是「已完成」，两者不能长得一样，否则「还剩几个」是数不出来的
-        const current = i === done;
+        const current = i === shown;
         return (
           <span
             key={i}
