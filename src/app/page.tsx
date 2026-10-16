@@ -2,6 +2,7 @@ import Link from "next/link";
 import AnswerSheet from "@/components/AnswerSheet";
 import Heatmap from "@/components/Heatmap";
 import ProgressBar from "@/components/ProgressBar";
+import Stat from "@/components/Stat";
 import { formatDate } from "@/lib/format";
 import { getTodayStats } from "@/lib/session";
 import { getDailySentence, getHeatmap, type DailySentence } from "@/lib/stats";
@@ -119,33 +120,6 @@ export default async function HomePage() {
       )}
 
       <Heatmap data={heatmap} />
-    </div>
-  );
-}
-
-/** 首页那三个统计格。三格刻意长得一模一样——同色、同字号。
- *
- *  `unit` 是给「天」这种单位用的：小一号、不加粗、走次要色。**不是每格都有**，
- *  但走的是同一套排版，所以有单位的格子看着仍像同一个家族的。 */
-function Stat({ label, value, unit }: { label: string; value: string; unit?: string }) {
-  return (
-    <div className="rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4 text-center">
-      <div className="font-serif text-3xl font-semibold tabular-nums">
-        {value}
-        {unit && (
-          <span className="ml-1 text-sm font-normal text-[var(--color-muted)]">{unit}</span>
-        )}
-      </div>
-      {/* 标签 10px 而不是全站微标签惯用的 11px：375px 下格子内容宽只有 72px，
-          「连续打卡天数」6 个 11px 汉字加 0.12em 字距是 73.9px，最后一个「数」
-          会被挤到第二行单独站着。10px 降到 67.2px，375px 余 5px。
-
-          nowrap 是兜底：360px 下只剩 0.13px 余量，字体度量稍有出入就会换行。
-          宁可让那 0.13px 溢出到卡片的内边距里（左右各 16px，看不见），也不要
-          让「数」一个人掉到第二行——那才是一眼就看得出的破版。 */}
-      <div className="mt-1 whitespace-nowrap text-[10px] tracking-[0.12em] text-[var(--color-muted)]">
-        {label}
-      </div>
     </div>
   );
 }

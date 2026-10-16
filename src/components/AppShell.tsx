@@ -59,7 +59,16 @@ const DARK_SURFACE =
  * `compact`（窄屏顶栏用）只留印章、收起文字块。导航项改成四字之后，375px 下
  * 品牌块的 156.76px 和三项的 248px 加起来溢出 61.5px，而能腾的位置只有这里——
  * 印章本身就是品牌标识，收掉书名不损失可识别性，只是手机上不再逐字念出书名。
- * 桌面侧栏不受影响（240px 宽，四字带图标每项 106px，余 100px 出头）。
+ * 桌面侧栏不受影响（240px 宽，四字带图标竖排，绰绰有余）。
+ *
+ * **320px 下连印章也藏**（见调用处那个 span 上的 `max-[359px]:hidden`）：
+ * 2026-10-16 加进第四项之后「印章 + 四项」要 322px，而 320px 视口只有 288px
+ * 可用。印章是 aria-hidden 的装饰物，藏掉它省 44px，导航 278px 就装得下。
+ * 这个兜底比记一条「已知例外」干净——项目的验收下限是 375px，320px 本来就该
+ * 优雅退化，而不是横向溢出。藏掉之后 `mr-auto` 跟着那个 span 一起消失、导航
+ * 贴到左边：320px 下可以接受，不去为它加 `ml-auto`——那会让自动外边距在
+ * ≥360px 下平分剩余空间，把现在贴右对齐的导航往回推，为了极端宽度改坏常用
+ * 宽度的对齐不划算。
  */
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
@@ -94,7 +103,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         className={`sticky top-0 z-10 border-b border-[var(--color-line)] bg-[var(--color-rail)] lg:hidden ${DARK_SURFACE}`}
       >
         <div className="mx-auto flex max-w-3xl items-center gap-1 px-4 py-3">
-          <span className="mr-auto">
+          {/* max-[359px]:hidden 是 320px 视口的兜底。加了第四项之后
+              「印章 40 + 间隙 4 + 导航 278」= 322px，320px 下只有 288px 可用，
+              印章是 aria-hidden 的装饰物，藏掉它正好装下。算错这里会把品牌
+              一起藏掉——藏的是整个 span，不是里面的 BrandMark。
+              ⚠️ 容器上这个 gap-1 是**品牌↔导航的间隙，保留不动**；收到 2px 的
+              是 Nav 里 `<nav>` 上的项间间隙，是另一个。 */}
+          <span className="mr-auto max-[359px]:hidden">
             <BrandMark compact />
           </span>
           <Nav />

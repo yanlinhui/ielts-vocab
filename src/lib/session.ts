@@ -157,8 +157,14 @@ export function hasIeltsTag(tags: string | null | undefined): boolean {
   return Boolean(tags && tags.includes("ielts"));
 }
 
-/** Anki 对「成熟卡片」的定义：已进入复习态、间隔拉到 21 天以上。全站只有这一处判据 */
-function isMastered(p: { state: string; scheduledDays: number }): boolean {
+/**
+ * Anki 对「成熟卡片」的定义：已进入复习态、间隔拉到 21 天以上。
+ *
+ * 用这个判据的地方有三处：本文件的 `getTodayStats`、章节列表页、统计页。
+ * **一律调这里**，别在页面里内联那行条件——此前 `units/page.tsx` 就有一份
+ * 手抄的副本，改判据时两处得同时改，漏一处数字就对不上。
+ */
+export function isMastered(p: { state: string; scheduledDays: number }): boolean {
   return p.state === "review" && p.scheduledDays >= 21;
 }
 

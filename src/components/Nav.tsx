@@ -50,6 +50,23 @@ const ICON = {
       <path d="M13.4 3.4H9.8a1.8 1.8 0 0 0-1.8 1.8v7.4a1.8 1.8 0 0 1 1.8-1.8h3.6z" />
     </svg>
   ),
+  // 研习统计 —— 三根高低不同的竖柱 + 一条基线。折线在 16px 下会糊成一团，
+  // 柱状读得出高低；和设置那两根滑杆也一眼分得开
+  stats: (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="h-4 w-4 shrink-0"
+    >
+      <path d="M3.6 11.6V8.8M8 11.6V4.4M12.4 11.6V6.6" />
+      <path d="M2.6 13.2h10.8" />
+    </svg>
+  ),
   // 设置 —— 两根滑杆。齿轮在 16px 下笔画会糊成一团，滑杆清楚得多
   settings: (
     <svg
@@ -71,16 +88,23 @@ const ICON = {
 
 // **图标只上 rail，顶栏那个 `icon` 字段不取用，不是漏了。**
 // 窄屏顶栏是横排的，375px 下可用宽度只有 343.3px。四个字的项每项 80px
-// （四字 56 + 左右内边距 24），三项加间隙 248px，再放完整的品牌块（实测
-// 156.76px）就是 404.76px——**溢出 61.5px**。收内边距（每项省 12px）、降字号
-// 到 13px（每项省 4px）最多补 48px，补不上这个缺口。
+// （四字 56 + 左右内边距 24），**四项**加项间间隙就是 332px，再放完整的品牌块
+// （实测 156.76px）远远超出去。收内边距、降字号补不上这个缺口，只能从品牌块腾。
 //
-// 所以顶栏这一侧做了两件事：去掉图标，并且收起品牌文字块只留印章
-// （见 AppShell 的 `BrandMark compact`）。收完是 印章 40 + 间隙 4 + 248 =
-// 292px，余 55px。桌面侧栏 240px 宽放得下图标 + 四字（每项 106px），不受影响。
+// 所以顶栏这一侧做了三件事：去掉图标；收起品牌文字块只留印章（见 AppShell 的
+// `BrandMark compact`）；**2026-10-16 加进第四项之后**，再把项的左右内边距从
+// 12px 收到 6px、项间间隙从 4px 收到 2px（都在下面 bar 那支 cls 里）。
+//
+// 收完的算术：印章 40 + 品牌↔导航间隙 4 + 导航 278（= 68×4 + 2×3）= 322px，
+// 375px 下余 21px、360px 下余 6px。320px 由 AppShell 的 `max-[359px]:hidden`
+// 兜底（藏掉印章省下 44px）。桌面侧栏 240px 宽、内容宽 208px，四项带图标竖排
+// 绰绰有余，一个字都不用动。
+//
+// ⚠️ 加项前那一版是「三项 + 印章 = 292px」，现在那个数已经不对了。
 const NAV = [
   { href: "/", label: "今日功课", icon: ICON.today },
   { href: "/units", label: "章节词汇", icon: ICON.units },
+  { href: "/stats", label: "研习统计", icon: ICON.stats },
   { href: "/settings", label: "研习设置", icon: ICON.settings },
 ];
 
@@ -107,7 +131,7 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
     : pathname;
 
   return (
-    <nav className={rail ? "flex flex-col" : "flex items-center gap-1"}>
+    <nav className={rail ? "flex flex-col" : "flex items-center gap-0.5"}>
       {NAV.map((item) => {
         // 根路径要全等，否则任何页面都会命中 "/"
         const active =
@@ -123,13 +147,18 @@ export default function Nav({ variant = "bar" }: { variant?: "bar" | "rail" }) {
         //
         // ⚠️ 边框色一律写成「哪一边」的形式（border-b-*），不用 border-[color]
         // 这种四边简写：简写会把相邻项的目录分隔线一起覆盖掉。
+        // ⚠️ bar 这一支的左右内边距 12px → 6px 是 2026-10-16 加第四项时收的
+        // （算术见上面 NAV 那段）。**rail 那支的 px-3 不要跟着动**——侧栏每项
+        // 有 208px 可用，收它只会让图标和文字贴到边线上；「两处保持一致」在这里
+        // 是错的。仓里另外还有一个 gap-1 在 AppShell 顶栏容器上（品牌↔导航那个），
+        // 那个也保留不动，收到 2px 的只有上面 `<nav>` 的项间间隙。
         const cls = rail
           ? `flex items-center gap-2.5 rounded-[var(--radius-control)] border-b border-b-[var(--color-line)] px-3 py-2.5 text-sm transition last:border-b-0 ${
               active
                 ? "bg-[var(--color-rail-seal)] font-medium text-[var(--color-ink)]"
                 : "text-[var(--color-muted)] hover:bg-[var(--color-rail-seal-soft)] hover:text-[var(--color-ink)]"
             }`
-          : `flex items-center border-b-2 px-3 py-1.5 text-sm transition ${
+          : `flex items-center border-b-2 px-1.5 py-1.5 text-sm transition ${
               active
                 ? "border-b-[var(--color-seal)] font-medium text-[var(--color-ink)]"
                 : "border-b-transparent text-[var(--color-muted)] hover:text-[var(--color-ink)]"

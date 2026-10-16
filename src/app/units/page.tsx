@@ -1,6 +1,7 @@
 import Link from "next/link";
 import ProgressBar from "@/components/ProgressBar";
 import { prisma } from "@/lib/db";
+import { isMastered } from "@/lib/session";
 import { getCurrentUser } from "@/lib/user";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,9 @@ export default async function UnitsPage() {
   for (const p of progress) {
     const slot = perUnit.get(p.word.unitId) ?? { started: 0, mastered: 0 };
     slot.started += 1;
-    if (p.state === "review" && p.scheduledDays >= 21) slot.mastered += 1;
+    // 判据统一走 session.ts 的 isMastered——这里原先是手抄的一份副本，
+    // 改判据时得两处同时改，漏一处数字就对不上
+    if (isMastered(p)) slot.mastered += 1;
     perUnit.set(p.word.unitId, slot);
   }
 
