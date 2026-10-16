@@ -741,6 +741,8 @@ export function hasIeltsTag(tags: string | null | undefined): boolean {
 
 配额、到期、先复习后学新这三条，都是**首页那条动线**的规则——目的是「每天固定喂一点、不让复习堆雪球」。章节专项是另一件事：用户主动挑了一章，要的就是把这一章走完，哪些词已经学过、哪些今天到期，都不该拦着他。
 
+**表格里那个「不适用」只指专项自己不被拦，不等于它不记账。** 专项模式不读 `dailyNewLimit`，但它引入的每个新词照样写一行 `UserWordProgress`，而首页那条动线和 `getTodayStats` 都按「今天创建的进度行」数 `newDone`——于是专项学的新词会**占掉首页动线当天的新词额度**。实测 2026-10-16：`dailyNewLimit = 20`，当天在专项里学掉 31 个新词，首页的 `newRemaining` 就成了 0，按钮虽是「开始学习（N 个）」但队列里一个**新词**都排不出来，只剩复习词。`newDone` 的语义本来就是「今天引入了多少新词」，不论从哪条路进来，所以这是口径使然、没有特判。那条「今日新词」的显示溢出见 12.1。
+
 #### 第二次修正：只给还没学过的词
 
 第一版分岔之后是 `where: { unitId }`，**无条件返回整章**。于是用户学完前 21 个、退出再进来，第 1 张卡又是第 1 个词——他报「进度好像没保存，重新进入这一章要从头开始」。
@@ -2138,6 +2140,8 @@ if (!rail && item.railOnly) return null;
 **超过 24 格自动回落成进度条**：`newLimit` 可设到 200，200 个 20px 方格在 736px 里排不下。规则写死在组件内部（`if (total < 1 || total > MAX_CELLS) return <ProgressBar .../>`），调用方不用管。默认 20，绝大多数情况走方格。实测 375px 下 20 格自动折成 2 行（每行 11 格）。
 
 无障碍沿用 `ProgressBar` 那套：外层 `role="progressbar"` + `aria-valuenow/min/max`，格子全部 `aria-hidden`。实测 1280×800 下 `aria-valuenow=14 aria-valuemax=20`，填色 14 格、描边 1 格、空心 5 格，与库内 `newDone=14 / newLimit=20` 对得上。
+
+**分子要封顶——`newDone` 可能大于 `newLimit`**（2026-10-16 补，用户报的现象）。章节专项自己不受每日配额约束（6.1），但它学的新词照样写进度行、照样被 `getTodayStats` 那条 `createdAt >= today` 数进 `newDone`。于是「配额 20、今天实际学了 31」时，`{newDone} / {newLimit}` 就渲染成反直觉的 `31 / 20`。修法是展示层夹一次：组件内部 `const shown = Math.min(done, total)`，`aria-label`、`aria-valuenow`、格子判定都走它（原先只夹了 `aria-valuenow`，可见文字与 `aria-label` 漏了）；首页那行可见文字在 `page.tsx` 里再夹一次。**数据层的 `newDone` 口径不动**——今天实际学了几个就是几个，封顶只发生在展示层。
 
 ### 12.2 学习热力图（`Heatmap.tsx`）
 
