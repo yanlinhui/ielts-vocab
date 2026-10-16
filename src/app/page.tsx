@@ -79,31 +79,41 @@ export default async function HomePage() {
           />
         </div>
 
-        <Link
-          href="/study"
-          className={`mt-1 rounded-[var(--radius-control)] px-4 py-2.5 text-center text-sm font-medium transition ${
-            hasTodo
-              ? "bg-[var(--color-brand)] text-[var(--color-on-brand)] hover:opacity-90"
-              : "border border-[var(--color-line)] hover:border-[var(--color-brand)]"
-          }`}
-        >
-          {hasTodo ? `开始学习（${todo} 个）` : "额外加练"}
-        </Link>
-
-        {/* 拼写练习排在主按钮**下面**、做成文字链接而不是第二个按钮：主按钮是
-            「今天该干的事」，拼写是回头检验学过的东西，主次得分得清（同 PRD 2.1
-            删掉那两个快捷入口的理由）。
-            一个词都没学过就不渲染——那种时候点进去只会撞上一句空态。
-            ⚠️ 窄屏顶栏放不下拼写那第五项（见 Nav.tsx 的宽度账），所以这一条
-            在手机上不是「顺带也有」，而是主要入口之一，别顺手删掉。 */}
-        {stats.started > 0 && (
+        {/* 两个按钮是同形不同色的一组，所以外面包一层：组内间距 gap-2（8px）比
+            组外那 16px（父容器的 gap-4）紧，读起来才像「主 + 辅」而不是两个
+            并列动作。mt-1 从主按钮挪到了这一层，主按钮的位置一个像素没动。 */}
+        <div className="mt-1 flex flex-col gap-2">
           <Link
-            href="/spelling"
-            className="text-center text-sm text-[var(--color-brand)] underline underline-offset-4"
+            href="/study"
+            className={`rounded-[var(--radius-control)] px-4 py-2.5 text-center text-sm font-medium transition ${
+              hasTodo
+                ? "border border-transparent bg-[var(--color-brand)] text-[var(--color-on-brand)] hover:opacity-90"
+                : "border border-[var(--color-line)] hover:border-[var(--color-brand)]"
+            }`}
           >
-            拼写练习（{stats.started} 个学过的词）
+            {hasTodo ? `开始学习（${todo} 个）` : "额外加练"}
           </Link>
-        )}
+
+          {/* 拼写练习：尺寸、圆角、内边距和上面那个主按钮**完全一致**，只有填充
+              不同——主按钮墨绿实底，这里走细描边。主按钮是「今天该干的事」，
+              拼写是回头检验学过的东西，两个都做成实底就分不出该点哪个了
+              （同 PRD 2.7 与 2.1 删掉那两个快捷入口的理由）。
+              ⚠️ 主按钮那一支的 `border-transparent` 也是为这个「一致」：高度是
+              内容撑开的，加了边框的那个盒子会比没加的高出两条边框。透明边框
+              只是把宽度占上，实底那支的填色照旧铺满（background-clip 默认就是
+              border-box），所以视觉没有任何变化。
+              一个词都没学过就不渲染——那种时候点进去只会撞上一句空态。
+              ⚠️ 窄屏顶栏放不下拼写那第五项（见 Nav.tsx 的宽度账），所以这一条
+              在手机上不是「顺带也有」，而是主要入口之一，别顺手删掉。 */}
+          {stats.started > 0 && (
+            <Link
+              href="/spelling"
+              className="rounded-[var(--radius-control)] border border-[var(--color-line)] px-4 py-2.5 text-center text-sm font-medium transition hover:border-[var(--color-brand)]"
+            >
+              拼写练习（{stats.started} 个学过的词）
+            </Link>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
