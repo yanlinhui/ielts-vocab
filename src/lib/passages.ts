@@ -16,8 +16,13 @@ export type Token =
 /** 成段的 token。正文按空行分段，段落之间才有 `<p>` 的间距 */
 export type Block = Token[];
 
-/** 标记里的词。允许连字符（up-to-date 这种） */
-const TAG = /\{\{([a-zA-Z][a-zA-Z-]*)\}\}/g;
+/**
+ * 标记里的词。允许连字符（`up-to-date`）和词组内的空格（`carbon dioxide`）。
+ *
+ * 与 `scripts/lib/passage-files.ts` 里那份必须逐字一致——那边校验、这边渲染，
+ * 认的不是同一套语法就会出现「脚本说覆盖了、页面显示不出来」。
+ */
+const TAG = /\{\{([a-zA-Z][a-zA-Z-]*(?: [a-zA-Z][a-zA-Z-]*)*)\}\}/g;
 
 /**
  * 词块上要显示的中文。
@@ -25,11 +30,21 @@ const TAG = /\{\{([a-zA-Z][a-zA-Z-]*)\}\}/g;
  * 取 ECDICT 的 `meaningCn` 而**不是** `bookMeaning`：后者是书中原话、受版权
  * 保护，而这一页是要给人读的（甚至可能给朋友看），用词典释义不新增暴露面。
  *
- * 原始值形如 `n. 银河, 星系, 一群(显赫的人物)\n[电] 银河系`——只取第一行，
- * 去掉开头的词性（词性在别处另有位置，这里再写一遍是重复）。
+ * 取的是**第一个含中文的行**，不是第一行。ECDICT 里少数词组词条的首行是个
+ * 占位编号——`carbon dioxide` 是 `-2`、`GAS STATION` 是 `-1`、`ice cream`
+ * 是 `-K2`——真释义排在第二行。原来按「取第一行」写，词块点开就显示 `-2`。
+ * 占位行里没有中文，所以找第一个含中文的行就能跳过它们；普通词条第一行
+ * 本来就含中文，行为不变。
+ *
+ * 找到之后去掉开头的词性（词性在别处另有位置，这里再写一遍是重复）。
  */
 export function shortMeaning(meaningCn: string): string {
-  return meaningCn.split("\n")[0].trim().replace(/^[a-z]+\.\s*/, "");
+  const lines = meaningCn
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const line = lines.find((l) => /[一-龥]/.test(l)) ?? lines[0] ?? "";
+  return line.replace(/^[a-z]+\.\s*/, "");
 }
 
 /**

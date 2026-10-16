@@ -19,8 +19,13 @@ import path from "path";
 
 const DIR = path.join(process.cwd(), "content", "passages");
 
-/** 标记里的词。允许连字符（up-to-date 这种） */
-const TAG = /\{\{([a-zA-Z][a-zA-Z-]*)\}\}/g;
+/**
+ * 标记里的词。允许连字符（`up-to-date`）和词组内的空格（`carbon dioxide`）。
+ *
+ * 空格那一支不是可选的：全书 13 个词条本身带空格（`ice cream`、`New Zealand`、
+ * `heart attack`…），不认空格它们就一个都标不上。
+ */
+const TAG = /\{\{([a-zA-Z][a-zA-Z-]*(?: [a-zA-Z][a-zA-Z-]*)*)\}\}/g;
 
 export type ParsedPassage = {
   title: string;

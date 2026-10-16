@@ -16,6 +16,23 @@ import { readPassageFiles, plainText } from "./lib/passage-files";
 
 const prisma = new PrismaClient();
 
+/**
+ * 明确不覆盖的词（按章号）。
+ *
+ * PRD 2.8 写的是「允许缺 2~3 个生僻词，脚本会把缺的词列出来，接不接受由人
+ * 判断」——这张表就是那个「人判断」的落点，判断的结果得写在代码里、有据可查，
+ * 不能靠每次跑脚本时临时决定。词表里少数条目是 OCR 或词典带进来的脏数据
+ * （第 3 章的 `the Beast` 释义是「阿特拉斯火箭」、`Coul` 是 `cowl` 的错拼），
+ * 为它们硬造一个句子比少标一个词更亏。每一条都必须写明理由。
+ */
+const KNOWN_MISSING: Record<number, string[]> = {
+  3: ["the Beast", "Coul"],
+  12: ["MLK"],
+  17: ["ine"],
+  18: ["BOOMIE"],
+  21: ["Harvey", "uss"],
+};
+
 async function main() {
   const files = readPassageFiles();
   if (files.length === 0) {
@@ -43,7 +60,12 @@ async function main() {
       continue;
     }
 
-    const known = new Set(unit.words.map((w) => w.headword));
+    // 比对走小写：正文里把 `GAS STATION` 写成 `gas station`、把 `June` 写成
+    // `june` 都是自然的写法，卡大小写只会逼出难看的正文。报缺词时给回原样。
+    const known = new Map(unit.words.map((w) => [w.headword.toLowerCase(), w.headword]));
+    const allowed = new Set(
+      (KNOWN_MISSING[f.chapterNo] ?? []).map((w) => w.toLowerCase()),
+    );
     const marked = new Set<string>();
     const outside = new Set<string>();
 
@@ -51,7 +73,8 @@ async function main() {
     for (const [i, p] of f.passages.entries()) {
       const distinct = new Set(p.tags);
       for (const t of distinct) {
-        if (known.has(t)) marked.add(t);
+        const k = t.toLowerCase();
+        if (known.has(k)) marked.add(k);
         else outside.add(t);
       }
       const chars = plainText(p.body).replace(/\s/g, "").length;
@@ -60,10 +83,19 @@ async function main() {
       );
     }
 
-    const missing = [...known].filter((w) => !marked.has(w));
+    const missing = [...known]
+      .filter(([k]) => !marked.has(k) && !allowed.has(k))
+      .map(([, v]) => v);
+    const skipped = [...known]
+      .filter(([k]) => !marked.has(k) && allowed.has(k))
+      .map(([, v]) => v);
+    const covered = known.size - missing.length - skipped.length;
     console.log(
-      `  合计覆盖 ${known.size - missing.length}/${known.size}（${(((known.size - missing.length) / known.size) * 100).toFixed(1)}%）`,
+      `  合计覆盖 ${covered}/${known.size}（${((covered / known.size) * 100).toFixed(1)}%）`,
     );
+    if (skipped.length) {
+      console.log(`  · 白名单跳过 ${skipped.length} 个: ${skipped.join(", ")}`);
+    }
 
     if (missing.length) {
       console.error(`  ✗ 没覆盖: ${missing.join(", ")}`);

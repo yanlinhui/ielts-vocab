@@ -59,12 +59,16 @@ export default async function ReadingPage({
         select: { headword: true, meaningCn: true },
       })
     : [];
-  const meaning = new Map(words.map((w) => [w.headword, shortMeaning(w.meaningCn)]));
+  // 键走小写，与 check_passages.ts 的比对口径一致——正文里写成 `gas station`
+  // 而不是词表里的 `GAS STATION` 时，中文照样查得到
+  const meaning = new Map(
+    words.map((w) => [w.headword.toLowerCase(), shortMeaning(w.meaningCn)]),
+  );
 
   const passages = raw.map((p) => ({
     id: p.id,
     title: p.title,
-    blocks: toParagraphs(p.body, (h) => meaning.get(h) ?? ""),
+    blocks: toParagraphs(p.body, (h) => meaning.get(h.toLowerCase()) ?? ""),
   }));
 
   return (
