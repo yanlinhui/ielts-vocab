@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/user";
+import { getSessionUser } from "@/lib/user";
 
 function clampInt(value: unknown, min: number, max: number): number | undefined {
   const n = Number(value);
@@ -16,7 +16,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
 
-  const user = await getCurrentUser();
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "未登录" }, { status: 401 });
+  }
 
   const data: {
     dailyNewLimit?: number;

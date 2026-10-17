@@ -32,6 +32,10 @@ export default function SettingsForm({ initial }: { initial: SettingsValues }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
       });
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `服务端返回 ${res.status}`);

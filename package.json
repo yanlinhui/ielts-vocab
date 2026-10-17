@@ -4,16 +4,19 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
+    "postinstall": "prisma generate",
     "lint": "next lint",
     "test": "tsx --test --test-concurrency=1 tests/spelling.test.ts tests/srs.test.ts tests/session.test.ts",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "db:seed:passages": "tsx scripts/seed_passages.ts",
+    "db:import": "tsx scripts/import_progress.ts",
     "check:passages": "tsx scripts/check_passages.ts",
     "db:studio": "prisma studio",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "auth:hash": "tsx scripts/hash_password.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

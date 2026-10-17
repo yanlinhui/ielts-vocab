@@ -80,6 +80,10 @@ export default function StudySession({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ wordId: current.wordId, rating, elapsedMs }),
         });
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as { error?: string };
           throw new Error(body.error ?? `服务端返回 ${res.status}`);
@@ -118,6 +122,10 @@ export default function StudySession({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ autoSpeak: next }),
       });
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
       if (!res.ok) throw new Error();
     } catch {
       setAutoSpeak(!next);

@@ -1,21 +1,29 @@
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { SESSION_COOKIE, verifySession } from "./auth";
 import { prisma } from "./db";
 
-// 现在没有登录，整个应用只服务一个人。
+// 数据模型按多用户建（Word 共享、UserWordProgress 按用户分），但这一版是
+// 私有部署、只有一个用户。登录只回答「来的是不是作者」这一个问题。
 //
-// 但数据模型是按多用户建的（Word 共享、UserWordProgress 按用户分），
-// 所以这里只是「当前用户是谁」这一个问题需要一个答案。以后加登录时，
-// 把这个函数换成「从 session 里取用户」即可，其余代码不用动。
-//
-// 取最早创建的那个用户；一个都没有就建一个（数据库清空后也能自愈）。
+// 两个入口：
+// - `getCurrentUser()` 给页面用。没会话就跳登录页——6 个页面都调它，
+//   所以加登录时页面一行不用改。
+// - `getSessionUser()` 给 Route Handler 用。没会话返回 null，路由自己回 401；
+//   在 API 里 redirect 会让 fetch 跟到登录页的 HTML，是错误的答案。
+
+export async function getSessionUser() {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+
+  const session = verifySession(token);
+  if (!session) return null;
+
+  return prisma.user.findUnique({ where: { id: session.userId } });
+}
 
 export async function getCurrentUser() {
-  const existing = await prisma.user.findFirst({ orderBy: { id: "asc" } });
-  if (existing) return existing;
-
-  return prisma.user.create({
-    data: {
-      name: "me",
-      settings: { create: { dailyNewLimit: 20, dailyReviewLimit: 200 } },
-    },
-  });
+  const user = await getSessionUser();
+  if (!user) redirect("/login");
+  return user;
 }

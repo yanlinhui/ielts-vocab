@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import { submitRating, type Rating } from "@/lib/srs";
-import { getCurrentUser } from "@/lib/user";
+import { getSessionUser } from "@/lib/user";
 
 // 提交一次评分。浏览器这边只需要知道「下次什么时候再见」，
 // 所有 FSRS 的计算都在服务端。
 export async function POST(request: Request) {
+  // 先认人再看请求体：没登录就不该拿到「你的参数哪里不对」这种反馈。
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "未登录" }, { status: 401 });
+  }
+
   let body: { wordId?: unknown; rating?: unknown; elapsedMs?: unknown };
   try {
     body = await request.json();
@@ -21,7 +27,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "rating 必须是 1~4" }, { status: 400 });
   }
 
-  const user = await getCurrentUser();
   const elapsedMs =
     typeof body.elapsedMs === "number" && body.elapsedMs >= 0
       ? Math.round(body.elapsedMs)

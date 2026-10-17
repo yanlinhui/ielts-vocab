@@ -47,3 +47,5 @@ Thumbs.db
 # ---- 本机设置与临时产物 ----
 .claude/settings.local.json
 data/_t.json
+# 从旧 SQLite 导出的学习进度，只用于一次性导入 Postgres
+data/progress-export.json

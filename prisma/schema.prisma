@@ -9,8 +9,11 @@
 // 这就是「架构预留多用户」的具体含义，不用等那天再重构。
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // 迁移和 seed 走直连。Neon 的运行时连接串是 pooler（PgBouncer 事务模式），
+  // 它跑不了 DDL；不写这一行，`migrate deploy` 会对着 pooler 报错。
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {

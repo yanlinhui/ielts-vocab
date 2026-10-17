@@ -41,6 +41,15 @@ export default async function SettingsPage() {
           <StatRow label="连续打卡" value={`${stats.streak} 天`} />
         </dl>
       </div>
+
+      <form method="post" action="/api/auth/logout">
+        <button
+          type="submit"
+          className="rounded-[var(--radius-chip)] border border-[var(--color-line)] px-4 py-2 text-sm text-[var(--color-muted)] transition-colors hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
+        >
+          登出
+        </button>
+      </form>
     </div>
   );
 }

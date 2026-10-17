@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Noto_Serif_SC } from "next/font/google";
-import AppShell from "@/components/AppShell";
 import "./globals.css";
 
 // 构建时由 Next 把字体拉到 .next 里自托管，运行时零网络请求。
@@ -33,8 +32,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN" className={serif.variable}>
       <body className="min-h-full">
-        {/* 导航和内容区的层架在 AppShell 里。 */}
-        <AppShell>{children}</AppShell>
+        {/* 带导航的页面在 (app) 路由组里，由那一层的 layout 挂 AppShell；
+            登录页在组外，所以不带侧栏。 */}
+        {children}
       </body>
     </html>
   );

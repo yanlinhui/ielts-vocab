@@ -3,7 +3,7 @@
 // ⚠️ 本模块 **import 了 `../src/lib/db`**，也就是会实例化 PrismaClient。所以测试
 // 文件必须先 `import "./env"` 再 import 这里，否则连的是 `dev.db`（见 env.ts 的说明）。
 //
-// ⚠️ **所有测试文件共用同一个 `prisma/test.db`，因此必须串行跑**（package.json 的
+// ⚠️ **所有测试文件共用同一个 `ielts_test` 库，因此必须串行跑**（package.json 的
 // test script 里挂着 `--test-concurrency=1`）。Node 的 test runner 默认并发跑测试
 // 文件，两个文件同时 `resetDb()` 会互相把对方刚塞的 fixture 删掉——症状是「单独跑
 // 全过、一起跑随机红一条」，很难查。
@@ -13,7 +13,19 @@ import { prisma } from "../src/lib/db";
 
 // 和 env.ts 里那个字面量必须一致。分开写是有意的：env.ts 不能 import 这里
 // （那会把它拖进 db 的依赖图、破坏「必须第一个求值」这条约束），所以两边各留一份。
-const TEST_DB_URL = "file:./test.db";
+const TEST_DB_URL = "postgresql://postgres:ielts_dev@localhost:5432/ielts_test?schema=public";
+
+// 防呆：测试库只允许在本机。哪怕哪天有人把 TEST_DB_URL 改成 Neon 的分支地址，
+// 这里也会当场拦住——migrate deploy 和 resetDb 都是不可逆的。
+function assertLocalTestDb(): void {
+  const host = new URL(TEST_DB_URL).hostname;
+  if (host !== "localhost" && host !== "127.0.0.1") {
+    throw new Error(`测试库必须在本机，当前指向 ${host}`);
+  }
+  if (process.env.DATABASE_URL !== TEST_DB_URL || process.env.DIRECT_URL !== TEST_DB_URL) {
+    throw new Error("env.ts 没有先于 helpers.ts 求值，测试会连错库");
+  }
+}
 
 // Windows 上没有 `npx` 这个可执行文件，只有 `npx.cmd`；execFileSync 不做 PATHEXT
 // 补全，写 "npx" 会直接 ENOENT。而写成 "npx.cmd" 也不行——Node 从 20.12 起
@@ -22,15 +34,19 @@ const TEST_DB_URL = "file:./test.db";
 const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
 
 /**
- * 把 `prisma/test.db` 建成本仓库 schema 的样子。幂等：已经建过、migration 也都
+ * 把 `ielts_test` 建成本仓库 schema 的样子。幂等：已经建过、migration 也都
  * 应用过时，Prisma 检查完 `_prisma_migrations` 就退出。
  *
  * 用 `migrate deploy` 不用 `db push`：仓库已经有 `prisma/migrations/`，deploy 的
  * 结果是确定的（就是那几份 migration 依次应用），也不会做 drift 检查。
+ *
+ * ⚠️ 库本身要先存在（`createdb -U postgres ielts_test`），见 README。
+ * 两个连接变量都要显式覆盖：Prisma Migrate 优先读 `DIRECT_URL`。
  */
 export function ensureTestDb(): void {
+  assertLocalTestDb();
   execFileSync(NPX, ["prisma", "migrate", "deploy"], {
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL, DIRECT_URL: TEST_DB_URL },
     // stdout 静音，stderr 留着——失败时 execFileSync 会把内容挂在 error 上
     stdio: ["ignore", "ignore", "pipe"],
     shell: true,
@@ -41,7 +57,7 @@ export function ensureTestDb(): void {
  * 每个用例之前清空所有表。
  *
  * 顺序按外键依赖来，子表在前：ReviewLog / UserWordProgress / WordExample 都挂着
- * 外键，先删父表会被 SQLite 挡下来。
+ * 外键，先删父表会被外键约束挡下来。
  */
 export async function resetDb(): Promise<void> {
   await prisma.reviewLog.deleteMany();

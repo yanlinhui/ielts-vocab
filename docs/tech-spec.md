@@ -2860,3 +2860,134 @@ server component、`force-dynamic`，取参口径照抄 `study/page.tsx` 与 `sp
 
 不记录阅读进度（读过哪篇、读了几遍都不存）；不做收藏 / 生词本联动；不做音频朗读；不做逐句翻译或语法标注；不给窄屏顶栏加第六项；不新增颜色 / 圆角 / 字号令牌，不引依赖。`Passage` 表**不做版本号**——短文改了就重灌，没有需要保留的历史。
 
+---
+
+## 16. 部署与多环境（阶段四，2026-10-17）
+
+### 16.1 三个前提
+
+| 决策 | 取值 | 直接后果 |
+|---|---|---|
+| 使用范围 | 私有部署，只有作者 | 不做注册、多账号、找回密码；登录只是门锁 |
+| 仓库 | **保持私有** | Vercel 免费版支持私有仓库；部署不要求公开代码，因此不剥离数据、不重写历史 |
+| 本地开发库 | 也换 Postgres | schema 与 migration 只保留一份，不再维护 SQLite/Postgres 两套 |
+
+业务代码几乎不动：所有查询早就把 `userId` 当参数传，`UserWordProgress` 的 `@@unique([userId, wordId])` 也在。这一阶段改的是**认人、换库、上线**。
+
+### 16.2 Postgres 切换
+
+`prisma/schema.prisma`：
+
+```prisma
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+```
+
+- **`directUrl` 是为 Neon 准备的**：运行时走 pooler（`-pooler` 主机名），迁移和 seed 走直连。Prisma Migrate 会**优先使用 `DIRECT_URL`**，所以测试和本地脚本两个变量都要显式覆盖，漏一个就可能对着别的库跑迁移。
+- 旧的 `prisma/migrations/`（SQLite 专有 `AUTOINCREMENT`、`PRAGMA defer_foreign_keys`）**整体**移到 `prisma/migrations-sqlite/` 留档。只移子目录、把 `migration_lock.toml` 留在 `prisma/migrations/` 会让 `migrate dev` 因 provider 不匹配报错。
+- 新的 Postgres 基线：`npx prisma migrate dev --name init --skip-seed`。`--skip-seed` 是必要的——`migrate dev` 在空库上会自动触发 seed，而这时我们只想建表。
+- 本地库用**免安装的便携版** `postgresql-16.10-1-windows-x64-binaries.zip`（EDB 官方分发），解压到 `E:\pg`，`initdb` 后在用户态跑，不装 Windows 服务，不写注册表。建 `ielts`（开发）和 `ielts_test`（测试）两个库，见 README「本地数据库」。
+  - 原本计划用 Docker（`compose.yaml`），实测**拉不到镜像**：`registry-1.docker.io` 超时，`docker.m.daocloud.io` 等镜像站也超时。Docker 28 本身装着，但网络这一层过不去，遂放弃。
+  - 便携版的好处是删起来只需要删目录，坏处是没有开机自启——`pg_ctl start` 要手动跑一次（README 里给了命令）。
+
+### 16.3 已有进度迁移
+
+切换前库里有 1 用户 / **34 条进度** / **57 条作答**。SQLite 里的 DateTime 是**整数毫秒**（实测 `1795250307201`），导入 Postgres 时要 `new Date(ms)`，不能当 ISO 字符串。
+
+流程：`scripts/export_sqlite.py`（Python 标准库 `sqlite3`）导出 → `db:seed` 灌新库 → `scripts/import_progress.ts` 导入。
+
+- **不按旧 `word.id` 映射**，按 `(unit.chapterNo, word.orderInUnit)` 找新词——id 是否复用不该成为正确性的前提。
+- 导入前清空目标库的 `UserWordProgress` / `ReviewLog`。`ReviewLog` 没有唯一键，重跑不清会翻倍。
+- **导入后不能再跑 `npm run db:seed`**：`prisma/seed.ts` 的第一步就是删光所有用户数据。这一点写进脚本结尾和 README。
+
+### 16.4 零依赖认证
+
+只有一个人用，不需要 `Session` 表，也不值得引 `next-auth` / `bcrypt` / `jose`。Node 内置的 `crypto` 够：
+
+| 件 | 做法 |
+|---|---|
+| 密码 | `scryptSync(password, salt, 64)`，存成 `scrypt:<saltB64>:<hashB64>`；比对用 `timingSafeEqual`。**分隔符是冒号不是美元符**——`.env` 里的 `$` 会被 dotenv-expand 当变量引用展开，Next 的加载器正是这么做的，写成 `scrypt$…$…` 存进去会被切碎 |
+| 会话 | payload `{ u: userId, e: expMs }` → `base64url + "." + HMAC-SHA256(AUTH_SECRET)` |
+| Cookie | `ielts_session`，httpOnly + SameSite=Lax + `secure`（仅生产），30 天 |
+| 认人 | `getSessionUser()` 验签后查 `User`；`getCurrentUser()` 改成「拿不到就 `redirect("/login")`」——**6 个页面一行不用改** |
+| API | 两个路由改用 `getSessionUser()`，无会话返回 401；客户端收到 401 跳 `/login` |
+| 登入/登出 | 无 JS 的 `<form method="post">` → Route Handler → `NextResponse.redirect(url, 303)`（303 防止浏览器重放 POST） |
+
+`getCurrentUser()` 原来「找不到用户就自动建一个 `me`」的逻辑删掉：用户由 seed 建，自动建会让「库是空的」看起来像「登录成功了但没数据」。
+
+公开仓库意味着登录端点也是公开的，所以失败要限速：5 次 / 10 分钟（按实例计数）+ 固定 300ms 延迟。serverless 下计数不跨实例，这是「聊胜于无」的一层，真正的防线是一个长随机密码。
+
+### 16.5 路由组：登录页不带壳
+
+根 `layout.tsx` 原来直接渲染 `AppShell`，登录页会带着侧栏。改成：
+
+```
+src/app/layout.tsx        → 只留 html / body / 字体
+src/app/(app)/layout.tsx  → 渲染 AppShell
+src/app/(app)/…           → 7 个页面 + loading.tsx
+src/app/login/page.tsx    → 独立页
+src/app/api/**            → 不动
+```
+
+⚠️ **`loading.tsx` 必须一起搬**。它原来的 Suspense 边界在 AppShell 之外；壳下移后，根 `loading` 会把整个侧栏替换成骨架。路由组会改变输出路径，迁移后删掉 `.next/` 重新构建。
+
+### 16.6 测试库
+
+`tests/env.ts` 和 `tests/helpers.ts` 里**各有一份**数据库地址，必须同时改。`ensureTestDb()` 本来就跑 `prisma migrate deploy`，但要**同时覆盖 `DATABASE_URL` 和 `DIRECT_URL`**，并断言 host 是 `localhost`——否则一处漏改、或者 Prisma 优先用了 `.env` 里的 `DIRECT_URL`，测试就会对着真实库跑迁移。
+
+`npm test` 仍是 72 条、串行（共用同一个测试库）。
+
+### 16.7 公开仓库前的剥离（本阶段不做）
+
+**2026-10-17 决定：仓库保持私有，这一节不执行。**
+
+原本的前提是「Vercel 部署必须公开仓库」，于是把剥离与历史重写排进了阶段四。这个前提是错的——Vercel 免费版支持私有仓库，部署不要求公开代码。重写 26 个提交的 hash、替换文档里的书中原文、把 7 个数据文件移出跟踪，全部是为公开仓库服务的，与部署无关，因此整块取消。仓库仍保持私有，第 6 节的版权结论不变。
+
+将来若真要公开，流程仍然有效，记在这里备用：
+
+逐字含书中原文的 7 个文件：
+
+```
+data/words.clean.json      data/words.raw.json       data/book-index.json
+data/notes-changes.json    data/parse-changes.json   data/spacing-changes.json
+data/spacing-report.md
+```
+
+1. 上述文件 `git rm --cached` 并加进 `.gitignore`，本地保留——seed 和校验脚本还要用
+2. 备份 `git bundle create ../ielts-history-backup-<日期>.bundle --all`（放仓库外）
+3. 先改掉文档里的书中原文（`plan.md` 的词条样例、`tech-spec.md` 的解析规则）并提交
+4. `git filter-repo --force --invert-paths --path …×7 --replace-text <临时文件>`
+5. 验证三项：`git log --all -- data/words.clean.json` 为空、`git rev-list --objects --all` 里没有这 7 个路径、抽样书中例句扫全部 blob 零命中
+
+重写历史会改掉全部提交 hash，执行前单独确认；`git push` 另算一次确认。
+
+### 16.8 Vercel + Neon
+
+| 步骤 | 要点 |
+|---|---|
+| Neon | 与 Vercel 同区域；拿 pooled 与 direct 两个连接串 |
+| 运行时 | `DATABASE_URL=<pooled>?sslmode=require&pgbouncer=true&connect_timeout=15&connection_limit=1` |
+| 迁移/seed | `DIRECT_URL=<direct>`，只手动跑一次，**不进 build** |
+| 构建 | `"build": "prisma generate && next build"`、`"postinstall": "prisma generate"` |
+| 环境变量 | `DATABASE_URL` / `DIRECT_URL` / `AUTH_PASSWORD_HASH` / `AUTH_SECRET` |
+
+build 只生成 client、不碰数据库：页面全是 `force-dynamic`，构建期不查库。
+
+### 16.9 验证（2026-10-17 本地实测）
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 |
+| `npm test` | **72 条全绿**，36 秒，跑在 `ielts_test`（Postgres） |
+| 进度迁移 | 34 条进度 / 57 条作答，`(chapterNo, orderInUnit)` 与时间戳逐条对上；迁移后 `ielts` 库仍是 34/3580（测试没串库） |
+| 登录 | 错密码 → `/login?error=1` 显示「密码不对。」；对密码 → `/`，侧栏出现，首页数字 34 个学过的词、3580 总词数 |
+| 登出 | `/settings` → `/login`，cookie 清空，7 个页面全部回登录页 |
+| 无会话 API | `/api/settings` 401、`/api/review` 401（认证检查已提到参数校验之前） |
+| 7 个页面 | 全部 200，无运行时报错 |
+| `npm run build` | 成功；页面全部是 `ƒ`（按需渲染），登录页也在内 |
+
+**踩到的坑：`$` 会被 dotenv-expand 展开。** 密码哈希最初写成 `scrypt$<salt>$<hash>`，Next 的 env 加载器把两段当变量引用替换成了空串，导致正确的密码永远登录失败；直接读 `.env` 文件看不出来，只有 `loadEnvConfig()` 之后才现形。改成冒号分隔。
+
