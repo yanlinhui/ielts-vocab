@@ -26,14 +26,14 @@ export default function PassageReader({
   // 默认自测
   const [quiz, setQuiz] = useState(true);
   // 已点开的词。按**词面**存，不按位置——同一个词在一篇里出现几次，
-  // 点开一处就全露出来，不然要把整篇每一处都点一遍
+  // 点开一处就全露出来，不然要把整篇每一处都点一遍。
+  // 再点一下收回：猜过一次之后再遮回去，才能把同一段再练一遍
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
 
-  function reveal(word: string) {
+  function toggle(word: string) {
     setOpened((prev) => {
-      if (prev.has(word)) return prev;
       const next = new Set(prev);
-      next.add(word);
+      if (!next.delete(word)) next.add(word);
       return next;
     });
   }
@@ -48,7 +48,7 @@ export default function PassageReader({
           对照阅读
         </ModeButton>
         <span className="text-xs text-[var(--color-muted)]">
-          {quiz ? "猜不准的点一下词，中文就出来" : "中文直接跟在词后面"}
+          {quiz ? "点词看中文，再点一下收回去" : "中文直接跟在词后面"}
         </span>
       </div>
 
@@ -74,7 +74,7 @@ export default function PassageReader({
                     <button
                       key={ti}
                       type="button"
-                      onClick={() => reveal(tok.v)}
+                      onClick={() => toggle(tok.v)}
                       className="cursor-pointer align-baseline"
                     >
                       <span className="border-b border-b-[var(--color-seal)] font-serif font-semibold text-[var(--color-seal)]">
