@@ -1,6 +1,6 @@
 # 雅思词汇真经 · 技术规范
 
-> 最后更新：2026-10-16
+> 最后更新：2026-10-17
 > 配套文档：[计划文档](./plan.md) · [PRD](./PRD.md)
 
 ---
@@ -21,17 +21,21 @@
                            │ 一次性导入
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  应用运行时（Next.js + SQLite，本地）                          │
+│  应用运行时（Vercel 函数，区域 sin1 新加坡）                    │
 │                                                              │
-│  seed.ts → SQLite (Word/Unit)                                │
+│  浏览器（自定义域名）→ Next.js Server Components / Handlers    │
 │                    ↓                                         │
-│  React 页面 ←→ Server Actions / Route Handlers               │
-│                    ↓                                         │
-│              lib/srs.ts (ts-fsrs)                            │
-│                    ↓                                         │
-│         SQLite (UserWordProgress / ReviewLog)                │
+│    lib/session.ts / lib/srs.ts (ts-fsrs)                     │
+│                    ↓  Prisma（运行时走 pooler 连接串）         │
+└──────────────────────────┬──────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Neon PostgreSQL（ap-southeast-1，与函数区域同区）             │
+│  Word / Unit / Passage / UserWordProgress / ReviewLog        │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+> **2026-10-17 起不是本地 SQLite 了**：阶段四换成 Postgres 并部署到 Vercel + Neon，本机开发也跑一个 Postgres 实例（便携版，`E:\pg`）。函数区域必须和数据库同区（新加坡 `sin1`），否则每个页面几十次串行查询会各付一个跨太平洋来回——实测差十倍，见 16.8。
 
 **关键架构决策：提取和应用完全解耦。**
 
@@ -50,12 +54,14 @@ Python 提取脚本只产出 `words.clean.json` 这一个文件。前端**完全
 | UI 框架 | React | 19.3.1 | 随 Next 15 一起装的 |
 | 语言 | TypeScript | **6.0.3** | 数据模型复杂（FSRS 状态 + 用户进度），类型能挡掉大量低级错误 |
 | 样式 | Tailwind CSS | 4.3.3 | 主流，无运行时开销 |
-| 数据库 | SQLite | — | 本地单文件，零配置 |
-| ORM | Prisma | **6.19.3**（client 与 CLI 同版本） | 用代码操作数据库。**换 Postgres 只改 datasource 一行** |
+| 数据库 | PostgreSQL | 16（本地）/ Neon（线上） | 阶段四从 SQLite 换过来。本地用便携版跑在 `E:\pg`，线上 Neon 在新加坡 |
+| ORM | Prisma | **6.19.3**（client 与 CLI 同版本） | 用代码操作数据库。接 Postgres 时加了 `directUrl` 给迁移用（见 16.2） |
 | 复习算法 | ts-fsrs | 5.4.2 | FSRS 官方 JS 实现，纯本地 |
 | 发音 | Web Speech API | — | 浏览器内置，零成本 |
+| 认证 | Node 内置 `crypto` | — | scrypt 存密码哈希 + HMAC 签 cookie，零依赖，见 16.4 |
+| 部署 | Vercel + Neon | — | 免费额度够用；函数区域必须选 `sin1`，见 16.8 |
 | 字体 | Noto Serif SC（`next/font/google`） | — | 构建时拉到 `.next` 自托管，运行时零网络。**只用于标题**，正文保持系统无衬线。选型见 11.2 |
-| 图表（阶段三） | Recharts | — | React 生态主流 |
+| 图表（阶段三） | 手写 div + 内联 SVG | — | 原计划 Recharts，实际零依赖自绘（见 13.5），**包没有装** |
 | 抠图脚本 | Python | 3.13 | **零第三方依赖**（手写 PDF 对象解析） |
 | OCR | rapidocr + onnxruntime | 3.10 / 1.31 | 本地 CPU 推理，模型随包自带、**不联网**；见 7.2 |
 
@@ -81,8 +87,8 @@ declare module "*.css";
 | 不用 | 为什么 |
 |---|---|
 | Zustand / Redux | 状态简单（当前卡片 + 队列），React `useState` 足够。加状态库是过度设计 |
-| 云端数据库 | 单人本地用，SQLite 够了 |
-| 认证库 | MVP 无登录 |
+| 自建服务器 / Docker | 线上 Vercel 免费额度够用，没有常驻进程要管；本地库用便携版 Postgres（Docker 拉不到镜像，见 16.2） |
+| 认证库 | 单密码 + 一个签名 cookie，`crypto` 够用（见 16.4）。引 next-auth / bcrypt 是把 20 行的事做成 200 行 |
 | 后端框架（Express 等） | Next.js 自带 Server Actions / Route Handlers |
 
 ---
@@ -129,25 +135,32 @@ IELTS Learning Tools/
 ├── ecdict/                            # ECDICT 数据（gitignore）
 │   └── ecdict.csv 或 stardict.db
 ├── prisma/
-│   ├── schema.prisma
-│   ├── migrations/                    # 3 个：init + add_progress_created_at + add_passage
-│   ├── dev.db                         # SQLite 数据文件（gitignore）
-│   └── seed.ts                        # 读 words.clean.json 灌库
+│   ├── schema.prisma                  # provider = postgresql + directUrl（见 16.2）
+│   ├── migrations/                    # Postgres 基线（2026-10-17 起的唯一一套）
+│   ├── migrations-sqlite/             # SQLite 时代的迁移，留档不删（见 16.2）
+│   ├── dev.db / test.db               # 旧 SQLite 文件，已不再使用，可删
+│   └── seed.ts                        # 读 words.clean.json 灌库（内含短文）
 ├── src/
 │   ├── app/
-│   │   ├── layout.tsx                 # 全局布局 + 字体导入，壳层交给 AppShell
+│   │   ├── layout.tsx                 # 只留 html / body / 字体；壳层在 (app)/layout.tsx
 │   │   ├── icon.svg                   # favicon（Next 约定文件名）
 │   │   ├── globals.css                # Tailwind 入口 + 设计令牌 + .flip-*，见第 11 节
-│   │   ├── page.tsx                   # 首页：今日进度 + 开始按钮 + 每日一句 / 热力图（见 12.1、12.2、12.4）
-│   │   ├── units/page.tsx             # 单元列表（排成书末目录的样子）
-│   │   ├── study/page.tsx             # 学习/复习（核心）
-│   │   ├── spelling/page.tsx          # 拼写练习（独立页，2026-10-16 从 /study?spell=1 拆出）
-│   │   ├── reading/page.tsx           # 拓展阅读（按章读短文，见第 15 节）
-│   │   ├── stats/page.tsx             # 统计（阶段三）
-│   │   ├── settings/page.tsx          # 设置
+│   │   ├── login/page.tsx             # 登录页。在路由组之外，所以不带侧栏（见 16.5）
+│   │   ├── (app)/                     # 路由组：这一组才挂壳层
+│   │   │   ├── layout.tsx             # 渲染 AppShell
+│   │   │   ├── loading.tsx            # ⚠️ 必须跟进来，否则骨架会盖掉整个侧栏
+│   │   │   ├── page.tsx               # 首页：今日进度 + 开始按钮 + 每日一句 / 热力图（见 12.1、12.2、12.4）
+│   │   │   ├── units/page.tsx         # 单元列表（排成书末目录的样子）
+│   │   │   ├── study/page.tsx         # 学习/复习（核心）
+│   │   │   ├── spelling/page.tsx      # 拼写练习（独立页，2026-10-16 从 /study?spell=1 拆出）
+│   │   │   ├── reading/page.tsx       # 拓展阅读（按章读短文，见第 15 节）
+│   │   │   ├── stats/page.tsx         # 统计（阶段三）
+│   │   │   └── settings/page.tsx      # 设置（底部带登出表单）
 │   │   └── api/
-│   │       ├── review/route.ts        # POST 评分
-│   │       └── settings/route.ts      # POST 保存设置
+│   │       ├── auth/login/route.ts    # POST 密码 → 设 cookie → 303
+│   │       ├── auth/logout/route.ts   # POST → 删 cookie → 303
+│   │       ├── review/route.ts        # POST 评分（无会话 401）
+│   │       └── settings/route.ts      # POST 保存设置（无会话 401）
 │   ├── components/
 │   │   ├── AppShell.tsx               # ★ 壳层：顶部栏 / 左侧栏 / 内容区，见 11.7
 │   │   ├── Nav.tsx                    # 导航链接（client，bar / rail 两种排布）
@@ -164,6 +177,7 @@ IELTS Learning Tools/
 │   │   └── SettingsForm.tsx
 │   ├── lib/
 │   │   ├── db.ts                      # Prisma 客户端单例（挂 globalThis）
+│   │   ├── auth.ts                    # ★ scrypt 哈希/校验 + HMAC 签验 cookie（server-only，见 16.4）
 │   │   ├── srs.ts                     # ★ FSRS 封装，唯一 import ts-fsrs 处
 │   │   ├── session.ts                 # 会话队列 + 今日统计
 │   │   ├── stats.ts                   # 热力图 / 每日一句，见第 12 节
@@ -171,16 +185,17 @@ IELTS Learning Tools/
 │   │   ├── passages.ts                # ★ 短文解析：{{}} 切 token + 词典释义（见 15.3）
 │   │   ├── rating.ts                  # Rating 类型 + 四档文案（不碰数据库）
 │   │   ├── tts.ts                     # Web Speech API 封装
-│   │   ├── user.ts                    # getCurrentUser()（多用户预留位）
+│   │   ├── user.ts                    # getSessionUser()（验 cookie 查 User）+ getCurrentUser()（没会话转 /login）
 │   │   ├── format.ts                  # 时间格式化（"3 天后"/"明天"）
 │   └── global.d.ts                    # `declare module "*.css"`，见第 2 节
 ├── tests/                             # 单元测试（node:test + tsx，零新依赖，见第 8 节）
-│   ├── env.ts                         # ★ 把 DATABASE_URL 指向 test.db，必须第一个 import
+│   ├── env.ts                         # ★ 把 DATABASE_URL / DIRECT_URL 指向 ielts_test，必须第一个 import（见 16.6）
 │   ├── helpers.ts                     # 建测试库 + 清表 + 造 fixture
 │   ├── srs.test.ts                    # FSRS 调度的形状（12 条）
 │   ├── spelling.test.ts               # 比对算法（17 条，纯函数、不碰数据库，见 8.8）
 │   └── session.test.ts                # 队列规则与日期口径（43 条）
-├── .env                               # DATABASE_URL（gitignore）
+├── .env                               # 真实变量（gitignore）
+├── .env.example                       # 变量名 + 占位值，给 clone 的人看
 ├── .claude/launch.json                # 本地 dev server 配置
 └── package.json
 ```
@@ -193,13 +208,15 @@ IELTS Learning Tools/
 
 ### 4.1 Prisma Schema
 
-> **注意**：SQLite 下 Prisma **不支持 `enum`**，所以状态字段用 `String` + 应用层校验。
+> **注意**：状态字段用 `String` + 应用层校验，**不用 enum**。这段 schema 从 SQLite 时代沿用——那时 Prisma 在 SQLite 下不支持 enum；换 Postgres 后虽然支持了，但改字段类型要动迁移和全部读写，没有收益，保持原样。
 > 时间统一存 **UTC**，展示时转本地时区。
+> `UserSettings.autoSpeak` 的 schema 默认值是 `false`，但页面在**没有设置行**时取 `?? true`——实际默认是**开**（见 PRD 2.4）。
 
 ```prisma
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")   // file:./dev.db
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")    // 迁移/seed 走直连；Neon 的 pooler 跑不了 DDL
 }
 
 generator client {
@@ -292,7 +309,7 @@ model UserWordProgress {
   word   Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
 
   // ---- FSRS 状态，直接映射 ts-fsrs 的 Card ----
-  // SQLite 没有 enum，state 用字符串 + 应用层校验（见 lib/srs.ts）
+  // 不用 enum，state 用字符串 + 应用层校验（见 lib/srs.ts）
   stability     Float    @default(0)
   difficulty    Float    @default(0)
   dueAt         DateTime @default(now())   // 下次到期时间
@@ -791,7 +808,7 @@ where: { unitId, progress: { none: { userId } } }
 
 > **第三种空状态是这次修正逼出来的。** 学习页原先只有两种空法：答过若干后抽干（本轮做完）和一个都没答就空（今日无待办）。章节学完会落进后者，显示「今天没有待学的词了。去『章节词汇』挑一个章节加练」——**人已经在一个章节里了，还叫他去挑章节**。所以补了第三种：进门就空、且带着章（`rated === 0 && unit`）时显示「第 N 章 XX 已经学完」。章名由 `study/page.tsx` 单独查一条 `unit` 传下来，因为**队列为空时没有词卡可以读出章名**。主动作也跟着换——学完一章的人下一步是挑下一章，所以那一态的主按钮是「浏览章节词汇」，不是「回首页」。
 
-**代价**：队列可能很长。最长的第 21 章 408 个词（这一章全部没学过时），服务端序列化后 **263 KiB**（第 1 章 233 个词是 148 KiB）。纯本地无网络请求可以接受；进度每评一次分就实时落库，中途退出不丢东西——这也正是学习页要写「进度已实时保存」的原因。
+**代价**：队列可能很长。最长的第 21 章 408 个词（这一章全部没学过时），服务端序列化后 **263 KiB**（第 1 章 233 个词是 148 KiB）。当初的判断依据是「纯本地、无网络请求」，这已经不完全成立（现在走公网），但这一笔只在进入该章时付一次，仍可接受；进度每评一次分就实时落库，中途退出不丢东西——这也正是学习页要写「进度已实时保存」的原因。
 
 #### 验证（两次修正合并记）
 
@@ -1360,15 +1377,17 @@ n. 宿舍            →  5 n. 宿舍
 | 断言 | Node 内置 **`node:assert/strict`** |
 | 跑 TypeScript | **`tsx --test`**（`tsx@4.23.15` 已在 devDependencies，它把 node 的参数透传） |
 
-**没装 vitest / jest**。项目的测试需求是「纯函数 + 一个临时 SQLite」，Node 自带的足够；装 vitest 要多背 Vite 和一堆转译依赖。
+**没装 vitest / jest**。项目的测试需求是「纯函数 + 一个独立的测试库」（当时是临时 SQLite，现在是 Postgres 的 `ielts_test`），Node 自带的足够；装 vitest 要多背 Vite 和一堆转译依赖。
 
 ```json
-"test": "tsx --test --test-concurrency=1 tests/srs.test.ts tests/session.test.ts"
+"test": "tsx --test --test-concurrency=1 tests/spelling.test.ts tests/srs.test.ts tests/session.test.ts"
 ```
 
 > **显式列文件，不用 `tests/**/*.test.ts` 通配**：npm 在 Windows 上走 `cmd.exe` 跑 script，通配展开行为跟 bash 不一致；将来加文件时顺手补一个名字，比赌通配符的跨平台行为稳。
 
 ### 8.3 测试库怎么和 `dev.db` 隔离
+
+> **2026-10-17 更新**：测试库已随阶段四换成 Postgres 的 `ielts_test`（见 16.6）。下面 `file:./test.db` 是当时（SQLite）的写法，**机制一点没变**——仍是 env 覆盖、`migrate deploy` 建表、串行跑；变的只是库的类型和地址（现在两个变量都要覆盖，且 host 断言 localhost）。
 
 `session.ts` 的队列逻辑必须查真库才有意义（`where: { progress: { none: { userId } } }` 这种关系过滤，mock 掉 prisma 就等于没测），所以要建一个**独立的测试库** `prisma/test.db`。
 
@@ -1485,8 +1504,8 @@ if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) { … } else { extra }
 | 4 | ECDICT License | 能否分享 | 分享前 | ⬜ 未开始（自己用不受影响） |
 | 5 | OCR 识别出的英文长句有多少要人工校对 | 例句质量的验收标准 | 阶段一步骤 3 后 | ⚠️ **质量参差**：音标完全不可靠 → 一律用 ECDICT；例句/搭配/词源已进 MVP（背面全展开）。2026-10-15 量化：例句 486/3635（13.4%）有单词粘连，搭配 3.3%、词源 1.6%。**同日已用 `fix_spacing.py` 修复，见 7.8** |
 | 6 | 词表里残余的坏词有多少 | 灌库前的数据可信度 | 阶段一收尾 | ✅ **已收敛**：99.6% 通过词典校验，剩 14 条待人工核对，灌库时按 `verified == false` 过滤 |
-| 7 | SQLite 文件放哪、是否纳入版本管理 | 部署方式 | 阶段二 | ✅ **已解决**：`prisma/dev.db`，**已 gitignore**。数据库是可再生产物（重跑 seed 就有），不该进版本库 |
-| 8 | 是否需要 `git init` | 版本管理 | 阶段二开始前 | ✅ **已解决**：已 `git init`，但按约定不自动 commit |
+| 7 | SQLite 文件放哪、是否纳入版本管理 | 部署方式 | 阶段二 | ✅ **已解决**，且 2026-10-17 换库后部分作废：数据库已不是 SQLite——本地是 `E:\pg` 的 Postgres 实例，线上是 Neon，两者都不进版本库。旧的 `prisma/dev.db` / `test.db` 还留在磁盘上，但已不再使用 |
+| 8 | 是否需要 `git init` | 版本管理 | 阶段二开始前 | ✅ **已解决**：已 `git init` 并推到 `github.com/yanlinhui/ielts-vocab`（公开）。约定不变：**不自动 commit / push** |
 
 ---
 
@@ -1494,14 +1513,16 @@ if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) { … } else { extra }
 
 **首次（或数据库重置后）**
 
+前置：本机跑着 Postgres 16（便携版装在 `E:\pg`，见 README），`ielts` 与 `ielts_test` 两个库已建好，`.env` 里 `DATABASE_URL` / `DIRECT_URL` / `AUTH_PASSWORD_HASH` / `AUTH_SECRET` 四项齐全。
+
 ```bash
 npm install
-npx prisma migrate dev     # 建表
-npm run db:seed            # 灌数据：22 单元 / 3580 词 + 拓展阅读短文（3 篇）
-npm run dev                # http://localhost:3000
+npx prisma migrate deploy  # 建表（Prisma 优先用 DIRECT_URL）
+npm run db:seed            # 灌数据：22 单元 / 3580 词 + 86 篇短文
+npm run dev                # http://localhost:3000 → 先跳 /login
 ```
 
-**日常**：只要 `npm run dev`。数据库是本地文件 `prisma/dev.db`，关掉重开进度还在。
+**日常**：先起来库（`pg_ctl.exe -D E:/pg/data start`，没装成服务，不会自启），再 `npm run dev`。数据在 Postgres 的 `ielts` 库里；换机器要么重新 `initdb`，要么把 `.env` 指向 Neon。
 
 **写 / 改拓展阅读短文之后**（见第 15 节）
 
@@ -1518,7 +1539,7 @@ npm run db:seed:passages   # 再灌库。只动 Passage 表，不碰词表和进
 npm test
 ```
 
-**72 条，约 35 秒**，`tsx --test --test-concurrency=1 tests/spelling.test.ts tests/srs.test.ts tests/session.test.ts`。打的是独立的 `prisma/test.db`，**不碰 `dev.db`**；测试进程不写 `.next/`，**和正在跑的 dev server 不冲突**（不需要停 dev）。原理见第 8 节。
+**72 条，约 35 秒**，`tsx --test --test-concurrency=1 tests/spelling.test.ts tests/srs.test.ts tests/session.test.ts`。打的是独立的 `ielts_test`（Postgres 里的另一个库），**不碰开发库 `ielts`**；测试进程不写 `.next/`，**和正在跑的 dev server 不冲突**（不需要停 dev）。原理见第 8 节，换库细节见 16.6。
 
 **⚠️ 一个坑：`next build` 和 `next dev` 不能同时跑。**
 
@@ -1590,7 +1611,7 @@ Require stack: ... .next/server/webpack-runtime.js
 
 - `fonts.googleapis.com` 和 `fonts.gstatic.com` **现在都通**（实测 CSS 接口 200，0.93s）。`plan.md` 3.4 里记的「网络被拦截」那条**已经过期**。
 - `@fontsource/noto-serif-sc` 解包后 **87 MB**，会塞进 `node_modules`；`next/font/google` 只把字体缓存进 `.next/static/media`（实测 **101 个 woff2，共 6.0 MB**）。
-- 运行时两边都是自托管、零网络，对「纯本地运行」没有影响。
+- 运行时两边都是自托管、零网络——字体不会额外增加请求，也不依赖 Google 的 CDN 在国内是否可达。
 
 几个实测结论：
 
@@ -2176,7 +2197,7 @@ if (!rail && item.railOnly) return null;
 | `WordExample`（`cn` 非空） | 3642 条，英文长度中位 49 字符 | 12.4 的每日一句 |
 | 22 个 Chapter 名 | 全有 | 各处出处标注 |
 
-**零新依赖**：四个图形的全部实现是 CSS 与内联 SVG，没有引入任何图表库（阶段三那张「Recharts」的表仍然只是计划）。
+**零新依赖**：四个图形的全部实现是 CSS 与内联 SVG，没有引入任何图表库（技术栈表里原写的 Recharts 已改成「手写 div + 内联 SVG」）。
 
 ### 12.1 答题卡进度格（`AnswerSheet.tsx`）
 
@@ -2866,13 +2887,14 @@ server component、`force-dynamic`，取参口径照抄 `study/page.tsx` 与 `sp
 
 ## 16. 部署与多环境（阶段四，2026-10-17）
 
-### 16.1 三个前提
+### 16.1 四个前提
 
 | 决策 | 取值 | 直接后果 |
 |---|---|---|
 | 使用范围 | 私有部署，只有作者 | 不做注册、多账号、找回密码；登录只是门锁 |
 | 仓库 | **公开** | `data/` 必须整体剥离并重写历史，见 16.7；部署本身不要求公开，这是额外选择 |
 | 本地开发库 | 也换 Postgres | schema 与 migration 只保留一份，不再维护 SQLite/Postgres 两套 |
+| 提交历史 | **重写** | 全部提交 hash 变化，首次 push 前做完成本最低；备份在仓库外 |
 
 业务代码几乎不动：所有查询早就把 `userId` 当参数传，`UserWordProgress` 的 `@@unique([userId, wordId])` 也在。这一阶段改的是**认人、换库、上线**。
 
@@ -2891,7 +2913,7 @@ datasource db {
 - **`directUrl` 是为 Neon 准备的**：运行时走 pooler（`-pooler` 主机名），迁移和 seed 走直连。Prisma Migrate 会**优先使用 `DIRECT_URL`**，所以测试和本地脚本两个变量都要显式覆盖，漏一个就可能对着别的库跑迁移。
 - 旧的 `prisma/migrations/`（SQLite 专有 `AUTOINCREMENT`、`PRAGMA defer_foreign_keys`）**整体**移到 `prisma/migrations-sqlite/` 留档。只移子目录、把 `migration_lock.toml` 留在 `prisma/migrations/` 会让 `migrate dev` 因 provider 不匹配报错。
 - 新的 Postgres 基线：`npx prisma migrate dev --name init --skip-seed`。`--skip-seed` 是必要的——`migrate dev` 在空库上会自动触发 seed，而这时我们只想建表。
-- 本地库用**免安装的便携版** `postgresql-16.10-1-windows-x64-binaries.zip`（EDB 官方分发），解压到 `E:\pg`，`initdb` 后在用户态跑，不装 Windows 服务，不写注册表。建 `ielts`（开发）和 `ielts_test`（测试）两个库，见 README「本地数据库」。
+- 本地库用**免安装的便携版** `postgresql-16.10-1-windows-x64-binaries.zip`（EDB 官方分发），解压到 `E:\pg`，`initdb` 后在用户态跑，不装 Windows 服务，不写注册表。建 `ielts`（开发）和 `ielts_test`（测试）两个库，见 README「本地跑起来」。
   - 原本计划用 Docker（`compose.yaml`），实测**拉不到镜像**：`registry-1.docker.io` 超时，`docker.m.daocloud.io` 等镜像站也超时。Docker 28 本身装着，但网络这一层过不去，遂放弃。
   - 便携版的好处是删起来只需要删目录，坏处是没有开机自启——`pg_ctl start` 要手动跑一次（README 里给了命令）。
 
@@ -3082,4 +3104,23 @@ curl --resolve <你的域名>:443:76.76.21.21 https://<你的域名>
 **未登录访问页面返回的是 200 而不是 302。** 因为 `loading.tsx` 让页面流式输出，`redirect()` 已经来不及改状态码，改成在 RSC 流里下发跳转指令（响应体里能看到 `/login;307;`），浏览器收到后照常跳到登录页。不是权限漏洞，但 curl 看不出来——排查这类问题时要看响应体，不能只看状态码。
 
 **踩到的坑：`$` 会被 dotenv-expand 展开。** 密码哈希最初写成 `scrypt$<salt>$<hash>`，Next 的 env 加载器把两段当变量引用替换成了空串，导致正确的密码永远登录失败；直接读 `.env` 文件看不出来，只有 `loadEnvConfig()` 之后才现形。改成冒号分隔。
+
+### 16.12 改密码（运维）
+
+密码**不在数据库里**，只在环境变量 `AUTH_PASSWORD_HASH` 里。改密码 = 换这个值 + 重新部署。
+
+```bash
+npm run auth:hash -- "新密码"     # 输出 scrypt:<salt>:<hash>
+```
+
+| 环境 | 怎么做 |
+|---|---|
+| 本地 | 把上面那一行贴进 `.env` 的 `AUTH_PASSWORD_HASH`，**重启** `npm run dev`（Next 只在启动时读 `.env`） |
+| 线上 | Vercel → Settings → Environment Variables → 改 `AUTH_PASSWORD_HASH` → 保存 → Deployments 里 **Redeploy** |
+
+**改完变量必须重新部署才生效**。第一次改密码时就踩过：只改了变量没 redeploy，旧密码照样能登。
+
+`AUTH_SECRET` 不动的话，**已经登录的设备不会被踢下线**——新密码只影响下一次登录。要强制所有设备下线，把 `AUTH_SECRET` 也换成一个新的 32 字节 hex。
+
+> 当前线上密码由作者自己保管，**不写进文档**——这个仓库是公开的。
 

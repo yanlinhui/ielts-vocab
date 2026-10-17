@@ -149,6 +149,16 @@ Vercel + Neon，免费额度够用。
 
 排查过程和证据见 `docs/tech-spec.md` 16.9。
 
+### 改密码
+
+密码不在数据库里，只存在环境变量 `AUTH_PASSWORD_HASH`：
+
+```bash
+npm run auth:hash -- "新密码"    # 把输出贴进 Vercel 的同名变量
+```
+
+改完**必须 Redeploy**，否则旧密码照样能登。本地改 `.env` 后重启 `npm run dev` 即可。完整流程（含「已登录设备不会被踢下线」这些细节）见 `docs/tech-spec.md` 16.12。
+
 ---
 
 ## 关于词库数据
