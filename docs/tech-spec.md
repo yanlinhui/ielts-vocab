@@ -2990,8 +2990,26 @@ git filter-repo --force --invert-paths --path data/ --replace-text <临时文件
 | 迁移/seed | `DIRECT_URL=<direct>`，只手动跑一次，**不进 build** |
 | 构建 | `"build": "prisma generate && next build"`、`"postinstall": "prisma generate"` |
 | 环境变量 | `DATABASE_URL` / `DIRECT_URL` / `AUTH_PASSWORD_HASH` / `AUTH_SECRET` |
+| **函数区域** | **必须手动改成 Singapore（sin1）**，默认是华盛顿 `iad1`，见下 |
 
 build 只生成 client、不碰数据库：页面全是 `force-dynamic`，构建期不查库。
+
+**函数区域默认在美国，不改会慢十倍。** Hobby 计划的函数区域默认 `iad1`（华盛顿），不会跟着数据库走。数据库在新加坡时，每次 Prisma 查询要多付一个跨太平洋来回（约 230ms），而一个页面渲染要发几十次串行查询：
+
+```
+你的设备 → 东京边缘(hnd1) → 华盛顿函数(iad1) → 新加坡数据库 → 原路返回
+```
+
+实测（2026-10-17，`/stats`，热态）：
+
+| 函数区域 | `/` | `/units` | `/settings` | `/stats` |
+|---|---|---|---|---|
+| `iad1` 华盛顿 | 14.9s | 5.2s | 9.5s | 13.2s |
+| `sin1` 新加坡 | 0.7s | 0.8s | 0.8s | 1.1s |
+
+改法：Settings → Functions → Function Region → Singapore (sin1)，然后**重新部署**。判断当前在哪跑看响应头 `x-vercel-id`，格式是 `<边缘节点>::<执行区域>::<id>`，要确认第二段是 `sin1` 而不是 `iad1`。
+
+改完仍会有 2~4 秒的**冷启动**（Vercel 回收闲置实例 + Neon 免费版闲置 5 分钟挂起），隔一阵子第一次打开才会有，之后稳定在 1 秒上下。免费额度下消不掉。
 
 **Deployment Protection 默认是开的。** 新项目建好后，所有部署地址都会 302 到 `vercel.com/sso-api`，自己用手机打开也会被 Vercel 的登录页挡住，根本到不了应用自己的密码页。要在 Settings → Deployment Protection 里关掉 Vercel Authentication。
 
