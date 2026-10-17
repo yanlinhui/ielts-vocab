@@ -2993,7 +2993,44 @@ git filter-repo --force --invert-paths --path data/ --replace-text <临时文件
 
 build 只生成 client、不碰数据库：页面全是 `force-dynamic`，构建期不查库。
 
-### 16.9 验证（2026-10-17 本地实测）
+**Deployment Protection 默认是开的。** 新项目建好后，所有部署地址都会 302 到 `vercel.com/sso-api`，自己用手机打开也会被 Vercel 的登录页挡住，根本到不了应用自己的密码页。要在 Settings → Deployment Protection 里关掉 Vercel Authentication。
+
+### 16.9 国内访问：自定义域名（2026-10-17 实测）
+
+**`*.vercel.app` 在国内用不了，换 IP 也没用。** 现象是连接能建立、TLS 握手被打断：
+
+```
+$ curl --resolve vercel.com:443:64.29.17.67 https://vercel.com            # 200
+$ curl --resolve ielts-vocab-yanlinhui.vercel.app:443:64.29.17.67 ...     # 握手失败
+```
+
+同一个 IP，只把 SNI 从 `*.vercel.app` 换成 `vercel.com` 就通了——说明封的是握手里的**域名**，不是 IP。所以解法是让浏览器握手时用别的域名：**绑一个自己的域名**。
+
+> 反例是 `curl --resolve foo.example.com:443:<vercel-ip>` 也会失败，但那是因为 Vercel 不认识这个域名、主动中止握手，不能据此判断线路不通。**判断国内可达性必须用 Vercel 自己服务的域名作对照**（`vercel.com`）。
+
+**A 记录别照抄 Vercel 的默认值。** 新项目向导给的是 `216.198.79.1`，这个 IP 在国内连不上（同域的 `216.198.79.67`、`64.29.17.67`、`76.76.21.21` 都通）。改成 Vercel 另一个官方 A 记录 `76.76.21.21` 即可，两者都受支持。
+
+| 主机记录 | 类型 | 值 | 备注 |
+|---|---|---|---|
+| `@` | A | `76.76.21.21` | 不用 Vercel 默认的 `216.198.79.1` |
+| `www` | CNAME | `cname.vercel-dns.com` | 同主机记录下不能和 A 并存，先删旧 A 再建 |
+
+**几个容易卡住的点：**
+
+- Vercel 把后加的那个域名设成主域名，裸域会 308 到 `www`。想用短地址，在 Domains 里把裸域设为 Primary。
+- `www` 只在 Vercel 里加过、DNS 也指过去，Vercel 才会给它签证书；漏了 Domains 那一步，CNAME 就是空指。
+- 改完 DNS 后本机要 `ipconfig /flushdns`，否则一直读旧缓存，看起来像没生效。
+- **Neon 不受影响**：新加坡节点在国内可以直连（TCP/TLS 正常，HTTP 请求返回 400 是正常的，它不是 HTTP 服务）。
+
+**验证方式**（不依赖本机 DNS 缓存，直接指定 IP）：
+
+```bash
+curl --resolve <你的域名>:443:76.76.21.21 https://<你的域名>
+```
+
+返回 200 且 HTML 里有应用标题，就说明证书、路由、IP 三者都对了。
+
+### 16.10 验证（2026-10-17 本地实测）
 
 | 项 | 结果 |
 |---|---|
@@ -3005,6 +3042,24 @@ build 只生成 client、不碰数据库：页面全是 `force-dynamic`，构建
 | 无会话 API | `/api/settings` 401、`/api/review` 401（认证检查已提到参数校验之前） |
 | 7 个页面 | 全部 200，无运行时报错 |
 | `npm run build` | 成功；页面全部是 `ƒ`（按需渲染），登录页也在内 |
+
+### 16.11 线上实测（2026-10-17）
+
+对 `https://www.princesscode666.com` 跑了一遍，全程不挂代理：
+
+| 项 | 结果 |
+|---|---|
+| 裸域 | 308 → `www.princesscode666.com`（Vercel 的默认主域名） |
+| 登录页 | 200，含密码输入框 |
+| 错密码 | 303 → `/login?error=1` |
+| 正密码 | 303 → `/`，`ielts_session` cookie 30 天，`Secure` + `HttpOnly` + `SameSite=lax` |
+| 未登录 `/api/review` | 401 |
+| 六个页面 | `/` `/units` `/stats` `/reading` `/spelling` `/settings` 全 200 |
+| 首页数据 | 3580 总词数、34 个学过的词、累计复习 57 次（与导入 Neon 时一致） |
+| 写路径 | `POST /api/review` 返回 200 + FSRS 间隔，统计随即变成 58 次 / 64% |
+| 登出 | 303 → `/login`，cookie 清空 |
+
+**未登录访问页面返回的是 200 而不是 302。** 因为 `loading.tsx` 让页面流式输出，`redirect()` 已经来不及改状态码，改成在 RSC 流里下发跳转指令（响应体里能看到 `/login;307;`），浏览器收到后照常跳到登录页。不是权限漏洞，但 curl 看不出来——排查这类问题时要看响应体，不能只看状态码。
 
 **踩到的坑：`$` 会被 dotenv-expand 展开。** 密码哈希最初写成 `scrypt$<salt>$<hash>`，Next 的 env 加载器把两段当变量引用替换成了空串，导致正确的密码永远登录失败；直接读 `.env` 文件看不出来，只有 `loadEnvConfig()` 之后才现形。改成冒号分隔。
 

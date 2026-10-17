@@ -135,9 +135,19 @@ Vercel + Neon，免费额度够用。
    DATABASE_URL=<direct> DIRECT_URL=<direct> npm run db:seed
    DATABASE_URL=<direct> DIRECT_URL=<direct> npm run db:seed:passages
    ```
-4. 部署后走一遍：登录 → 学习一个词 → 刷新看进度还在 → 登出
+4. 关掉 **Settings → Deployment Protection** 里的 Vercel Authentication，否则所有部署地址都会 302 到 Vercel 登录页，手机上也进不去
+5. 部署后走一遍：登录 → 学习一个词 → 刷新看进度还在 → 登出
 
-仓库可以保持私有——Vercel 免费版支持私有仓库。
+### 在国内访问
+
+`*.vercel.app` 在国内用不了：TCP 能连上，TLS 握手会被按 SNI 掐断。**绑一个自己的域名**即可——握手时用的是你的域名，不再被拦。Neon 在境外不受影响，可以直连。
+
+域名解析注意两点：
+
+- 裸域 A 记录用 `76.76.21.21`。Vercel 新项目向导默认给 `216.198.79.1`，那个 IP 在国内连不上。
+- `www` 用 CNAME 指向 `cname.vercel-dns.com`，并且要在 Vercel 的 Domains 里也加过，否则签不出证书。
+
+排查过程和证据见 `docs/tech-spec.md` 16.9。
 
 ---
 
