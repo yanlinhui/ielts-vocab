@@ -68,6 +68,8 @@ npm run db:seed:passages  # 86 篇拓展阅读
 npm run dev
 ```
 
+> `db:seed` 读 `data/words.clean.json`，而 `data/` 不在仓库里（见最后一节）。没有原书的话，这一步跑不起来，只能先 `npm run db:seed:passages` 灌短文（`content/passages/` 是自写内容，在仓库里）。
+
 打开 http://localhost:3000，会先跳到 `/login`。
 
 > ⚠️ **`db:seed` 会删光所有学习进度**。它第一步就是清空 `User`、`UserWordProgress`、`ReviewLog`。日常更新词表以外，别在已有进度的库上跑。
@@ -141,9 +143,11 @@ Vercel + Neon，免费额度够用。
 
 ## 关于词库数据
 
-`data/` 下的词表来自作者自己购买的纸质书，逐字包含书中的例句、搭配、词根词源。这些是刘洪波与外研社的原创内容，**本仓库不对外发布，也不提供词表下载**。代码里的提取流水线（`scripts/`）需要自备原书才能产出数据。
+**这个仓库里没有词表。** `data/` 整个目录被 gitignore 掉了——里面是《雅思词汇真经》的例句、搭配、词根词源，逐字来自刘洪波与外研社的出版物，属于版权内容。
 
-个人使用没问题；公开传播就是另一回事了。详见 `docs/plan.md` 第 6 节。
+所以 clone 下来直接跑，数据库是空的。要跑起来得自备原书，用 `scripts/` 里的流水线（抠图 → OCR → 解析 → 校对）自己生成 `data/words.clean.json`。
+
+代码本身是公开的，欢迎看；词表不提供下载。详见 `docs/plan.md` 第 6 节。
 
 ---
 

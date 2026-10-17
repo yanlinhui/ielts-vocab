@@ -14,13 +14,11 @@ next-env.d.ts
 .env
 .env*.local
 
-# ---- 提取流水线的中间产物（体积大，可重新生成）----
-data/pages/
-data/ocr/
+# ---- 词表与提取流水线的全部产物：含书中原文，绝不入库 ----
+# data/ 里是例句、搭配、词根词源——出版社的版权内容。整个目录由
+# scripts/ 从自备原书生成，只在本地使用，不进公开仓库。
+data/
 ecdict/
-
-# ---- 词表的本地备份快照（只是副本，没有脚本读它）----
-data/words.clean.backup.json
 
 # ---- 原始资料：书本身，绝不入库 ----
 *.pdf
@@ -44,8 +42,5 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
-# ---- 本机设置与临时产物 ----
+# ---- 本机设置 ----
 .claude/settings.local.json
-data/_t.json
-# 从旧 SQLite 导出的学习进度，只用于一次性导入 Postgres
-data/progress-export.json

@@ -1025,7 +1025,7 @@ if (opts.wordIds) return buildWordListSession(userId, opts.wordIds);
 
 **难点**：这些内容都会换行折断（长例句必然折行），所以**不能简单按行切**。判定词条边界的依据是「这一行是否以 `单词 + /音标/` 的模式开头」。`data/ocr/*.json` 里的块坐标可作辅助（词目行字号更大、更靠左）。
 
-输出结构：
+输出结构（各字段已换成占位符，不含书中原文）：
 
 ```json
 {
@@ -1036,12 +1036,12 @@ if (opts.wordIds) return buildWordListSession(userId, opts.wordIds);
       "startPage": 1,
       "words": [
         {
-          "headword": "atmosphere",
+          "headword": "<单词>",
           "orderInUnit": 1,
           "rawMeaning": "<词性. 释义>",
-          "examples": [{ "en": "...", "cn": "..." }],
+          "examples": [{ "en": "<例句>", "cn": "<译文>" }],
           "collocation": "<搭配组>",
-          "etymology": "<词根>+<词根>→<释义>"
+          "etymology": "<词根词源>"
         }
       ]
     }
@@ -1053,7 +1053,7 @@ if (opts.wordIds) return buildWordListSession(userId, opts.wordIds);
 
 边界既然靠「这一行是不是词目行」来判，那么**词目行之后的任何无标签行都会归给当前词条**。于是：
 
-1. **全书最后一个词会吞掉整页索引。** 书末索引（第 312 页起）的行是「单词 + 页码」格式，不带词目行特征，被当成它的正文一路累积下去。实测 `incidentally`（Ch22 第 51 个、书第 311 页，**全书最后一个词**）的 `note` 字段装了 **16793 字符**的索引页（`<单词><页码><单词><页码>…`）。第 3 步虽然有 `page >= INDEX_PAGE` 过滤，但拦的是**词条的起始页**，拦不住 body 里后续页的行。修法：在切分阶段（第 2 步）就直接丢掉 `page >= INDEX_PAGE` 的行。
+1. **全书最后一个词会吞掉整页索引。** 书末索引（第 312 页起）的行是「单词 + 页码」格式，不带词目行特征，被当成它的正文一路累积下去。实测 `incidentally`（Ch22 第 51 个、书第 311 页，**全书最后一个词**）的 `note` 字段装了 **16793 字符**的索引页（形如 `<单词><页码><单词><页码>…`，无分隔）。第 3 步虽然有 `page >= INDEX_PAGE` 过滤，但拦的是**词条的起始页**，拦不住 body 里后续页的行。修法：在切分阶段（第 2 步）就直接丢掉 `page >= INDEX_PAGE` 的行。
 2. **每章最后一个词的 `note` 尾部会粘一个页码。** 实测全书 **51 处**（Ch1 `1320`、Ch3 `3`、Ch4 `4`、Ch5 `5`、Ch6 `6`、Ch9 `9`、Ch10 `10`、Ch11 `11`…）。修法：丢弃整行纯数字。
 
 改完重跑验证：词数仍是 3610，差异**只有那 51 个 `note` 字段**，headword / meaning / examples / collocation / etymology 一字未动。
@@ -2869,7 +2869,7 @@ server component、`force-dynamic`，取参口径照抄 `study/page.tsx` 与 `sp
 | 决策 | 取值 | 直接后果 |
 |---|---|---|
 | 使用范围 | 私有部署，只有作者 | 不做注册、多账号、找回密码；登录只是门锁 |
-| 仓库 | **保持私有** | Vercel 免费版支持私有仓库；部署不要求公开代码，因此不剥离数据、不重写历史 |
+| 仓库 | **公开** | `data/` 必须整体剥离并重写历史，见 16.7；部署本身不要求公开，这是额外选择 |
 | 本地开发库 | 也换 Postgres | schema 与 migration 只保留一份，不再维护 SQLite/Postgres 两套 |
 
 业务代码几乎不动：所有查询早就把 `userId` 当参数传，`UserWordProgress` 的 `@@unique([userId, wordId])` 也在。这一阶段改的是**认人、换库、上线**。
@@ -2940,29 +2940,46 @@ src/app/api/**            → 不动
 
 `npm test` 仍是 72 条、串行（共用同一个测试库）。
 
-### 16.7 公开仓库前的剥离（本阶段不做）
+### 16.7 公开仓库前的剥离与历史重写（已执行）
 
-**2026-10-17 决定：仓库保持私有，这一节不执行。**
+**2026-10-17 执行。** 顺序：备份 → 工作区剥离 → 改文档 → 提交 → 重写历史 → 验证。
 
-原本的前提是「Vercel 部署必须公开仓库」，于是把剥离与历史重写排进了阶段四。这个前提是错的——Vercel 免费版支持私有仓库，部署不要求公开代码。重写 26 个提交的 hash、替换文档里的书中原文、把 7 个数据文件移出跟踪，全部是为公开仓库服务的，与部署无关，因此整块取消。仓库仍保持私有，第 6 节的版权结论不变。
+**剥离范围比原计划大**：原计划摘「7 个逐字含原文的文件」，实际直接把**整个 `data/` 目录**移出版本控制并写进 `.gitignore`。理由：这 9 个文件里 8 个含书中内容，剩下 `data/ecdict-report.md` 留着的收益不值一次单独维护——而 `data/` 本来就是本地产物（流水线生成、体积大、可重建）。少一个「哪些该摘」的判断，就少一次漏摘的风险。
 
-将来若真要公开，流程仍然有效，记在这里备用：
+**备份（仓库外）**
 
-逐字含书中原文的 7 个文件：
-
-```
-data/words.clean.json      data/words.raw.json       data/book-index.json
-data/notes-changes.json    data/parse-changes.json   data/spacing-changes.json
-data/spacing-report.md
+```bash
+git bundle create ../ielts-history-backup-20261017.bundle --all
+cp -r data ../ielts-data-backup-20261017        # 本地数据也留一份
 ```
 
-1. 上述文件 `git rm --cached` 并加进 `.gitignore`，本地保留——seed 和校验脚本还要用
-2. 备份 `git bundle create ../ielts-history-backup-<日期>.bundle --all`（放仓库外）
-3. 先改掉文档里的书中原文（`plan.md` 的词条样例、`tech-spec.md` 的解析规则）并提交
-4. `git filter-repo --force --invert-paths --path …×7 --replace-text <临时文件>`
-5. 验证三项：`git log --all -- data/words.clean.json` 为空、`git rev-list --objects --all` 里没有这 7 个路径、抽样书中例句扫全部 blob 零命中
+**工作区剥离**
 
-重写历史会改掉全部提交 hash，执行前单独确认；`git push` 另算一次确认。
+1. `.gitignore` 加 `data/`（原来的 `data/pages/`、`data/ocr/`、`words.clean.backup.json` 等分项规则随之收拢成一行）
+2. `git rm -r --cached data/` —— 只断跟踪，本地文件保留，`npm run db:seed` 照常能跑
+3. 文档里的书中原文换成结构占位：
+   - `plan.md` 的词条样例 → `<单词> /<音标>/` 五行结构示意
+   - `tech-spec.md` 的解析输出 JSON → 各字段换成 `<占位符>`
+   - `tech-spec.md` 里索引页的实文片段 → `<单词><页码>…` 形式描述
+4. 提交
+
+**历史重写**
+
+```bash
+pip install git-filter-repo --index-url https://pypi.org/simple/
+git filter-repo --force --invert-paths --path data/ --replace-text <临时文件>
+```
+
+`--invert-paths --path data/` 把整条路径从所有提交里删掉；`--replace-text` 处理文档里那几句——**只删路径不够**，旧提交里的 `docs/*.md` 仍带着书中原文。替换文件用 `旧文本==>新文本` 逐行写，放在仓库外。
+
+**验证四项**
+
+1. `git log --all --oneline -- data/` 为空
+2. `git rev-list --objects --all | grep ' data/'` 为空
+3. 从原词表抽 4166 条长字符串做 `git grep -F -f`，全库零命中
+4. 提交数 = 原 27 + 剥离提交 1
+
+**注意**：重写后所有提交 hash 改变，已有 clone 全部失效。这一步在**首次 push 之前**做，成本最低——仓库一旦推上去被别人 clone 过，再重写就要通知所有人重新 clone。
 
 ### 16.8 Vercel + Neon
 
